@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataflex_verl"
+version = "0.0.1"
+description = "DataFlex data-scheduling (Select / Mix / Reweight) for verl RL training — a zero-fork plugin."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+keywords = ["RL", "RLHF", "PPO", "GRPO", "verl", "data-centric", "LLM", "data selection"]
+dependencies = ["pyyaml"]
+
+# verl is the host framework. It is an integration dependency but intentionally
+# not auto-installed here (users install a specific verl build in their env).
+[project.optional-dependencies]
+verl = ["verl"]
+dev = ["pytest", "ruff", "build", "numpy", "torch"]
+
+# Zero-config auto-registration. verl (>= the version with plugin discovery)
+# scans the "verl.plugins" entry-point group on `import verl` and calls _ep.load()
+# on each. We point it at the `dataflex_verl.autoload` MODULE, whose import side
+# effect runs register_all() — so merely having verl import (in the driver AND in
+# every Ray actor/worker, which all import verl) registers our trainers. No .pth,
+# no PYTHONPATH, no manual import needed.
+[project.entry-points."verl.plugins"]
+dataflex = "dataflex_verl.autoload"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dataflex_verl = ["configs/*.yaml"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 119

@@ -1,0 +1,50 @@
+# DataFlex-verl component presets.
+# Referenced by config.dataflex blocks; params here are defaults you can override
+# inline in the training YAML.
+
+scorers:
+  reward_difficulty:
+    name: reward_difficulty
+    params: {}
+  advantage_magnitude:
+    name: advantage_magnitude
+    params:
+      agg: mean
+  group_solve_rate:
+    name: group_solve_rate
+    params:
+      success_threshold: 0.5
+
+reweighters:
+  softmax:
+    name: softmax
+    params:
+      temperature: 1.0
+  difficulty_band:
+    name: difficulty_band
+    params:
+      low_q: 0.25
+      high_q: 0.75
+      focus_weight: 2.0
+
+selectors:
+  threshold_band:
+    name: threshold_band
+    params:
+      low: 0.0
+      high: 1.0
+  topk_fraction:
+    name: topk_fraction
+    params:
+      fraction: 0.5
+      largest: true
+
+mixers:
+  reward_gap:
+    name: reward_gap
+    params:
+      temperature: 1.0
+      floor: 0.05
+  static:
+    name: static
+    params: {}

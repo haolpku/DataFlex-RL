@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+wheelout/
+
+# test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# verl / hydra run artifacts
+outputs/
+*.log
+
+# envs
+.venv/
+venv/
