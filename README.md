@@ -34,7 +34,8 @@ verl's vanilla policy loss already multiplies in — **no custom policy loss nee
 Mix is retrospective and per-domain: it accumulates each domain's mean reward and
 steers *future* sampling, so it needs a warmup phase (cold start).
 
-See [`../DESIGN_dataflex_verl.md`](../DESIGN_dataflex_verl.md) for the full rationale.
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the full rationale, and
+[`docs/QUICKSTART.md`](docs/QUICKSTART.md) for a copy-paste walkthrough.
 
 ## Usage
 
