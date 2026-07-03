@@ -8,6 +8,7 @@ Three mechanism-aligned reports:
 - [`01_selection.md`](01_selection.md) — Selectors (drop/keep samples)
 - [`02_reweighting.md`](02_reweighting.md) — Reweighters (per-sample/-token loss weights)
 - [`03_mixture.md`](03_mixture.md) — Mixers (domain sampling proportions)
+- [`04_what_beats_baseline.md`](04_what_beats_baseline.md) — **which algorithms have empirical evidence of beating GRPO baseline** (small-model focus) + how our own 4-run result maps to the literature
 
 Each entry lists: signal · rule · granularity · group-dependence · verl implementation
 difficulty. Full sources at the end of each file.
