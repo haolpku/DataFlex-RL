@@ -58,3 +58,32 @@ class DifficultyBandReweighter(Reweighter):
         band = (s >= q1) & (s <= q2)
         w[band] = self.focus_weight
         return _normalize_mean_one(w)
+
+
+@register_reweighter("advantage_reweight")
+class AdvantageReweighter(Reweighter):
+    """Token-level low-probability damping (AR, arXiv:2505.12929).
+
+    w_t = alpha * pi_theta(t) + (1 - alpha), where pi_theta(t) is the per-token
+    probability from the ``token_prob`` scorer. Low-prob tokens (small pi) get a
+    weight near (1-alpha), high-prob tokens near 1 — damping the outsized gradients
+    low-prob tokens would otherwise contribute. Mean-normalized over valid tokens.
+
+    Expects a (bs, L) score (per-token prob) and returns a (bs, L) weight matrix;
+    paired with a token-granularity scorer so the trainer skips the per-sample
+    broadcast.
+    """
+
+    def __init__(self, alpha: float = 0.5, **kwargs):
+        super().__init__(**kwargs)
+        assert 0.0 <= alpha <= 1.0
+        self.alpha = alpha
+
+    def act(self, scores: torch.Tensor, batch, **ctx) -> torch.Tensor:
+        pi = scores.float()                                   # (bs, L) in (0,1]
+        w = self.alpha * pi + (1.0 - self.alpha)              # (bs, L)
+        # mean-normalize over valid tokens to preserve effective LR
+        mask = batch.batch["response_mask"].to(w.dtype)
+        denom = (w * mask).sum().clamp(min=1e-8)
+        cnt = mask.sum().clamp(min=1.0)
+        return w * (cnt / denom)

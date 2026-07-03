@@ -120,3 +120,25 @@ class GroupSolveRateScorer(Scorer):
             rate = success[idx].mean()
             out[idx] = rate
         return out
+
+
+@register_scorer("token_prob")
+class TokenProbScorer(Scorer):
+    """Per-token policy probability π_θ(t) = exp(old_log_prob), shape (bs, L).
+
+    The signal for Advantage Reweighting (arXiv:2505.12929): low-probability tokens
+    produce outsized gradients and over-dominate the update. Returning the per-token
+    probability lets a token-granularity reweighter damp them.
+
+    We use ``old_log_probs`` (the log-prob under the policy that generated the rollout,
+    persisted in the TransferQueue) as a stable, forward-pass-free proxy for π_θ.
+    """
+
+    requires = ["old_log_probs", "response_mask"]
+    timing = "post_advantage"
+    granularity = "token"
+    needs_groups = False
+
+    def score(self, batch, step_id, **ctx):
+        logp = batch.batch["old_log_probs"]           # (bs, L)
+        return logp.exp()                             # π in (0, 1]

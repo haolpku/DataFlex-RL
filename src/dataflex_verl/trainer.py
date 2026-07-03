@@ -102,21 +102,26 @@ class DataFlexSyncTrainer(PPOTrainerSync):
             dp.non_tensor_batch["uid"] = np.array(dp.batch.pop("uid").tolist(), dtype=object)
 
         n = dp.batch["response_mask"].shape[0]
+        pad_mask = dp.batch["response_mask"].float()
+        token_level = getattr(self._df_scorer, "granularity", "prompt") == "token"
+
         with torch.no_grad():
-            scores = self._df_scorer.score(dp, self.global_steps)          # (bs,)
-            weights = self._weights_from_actuator(scores, dp, n)           # (bs,)
-
-        pad_mask = dp.batch["response_mask"]
-        # keep weights in float — response_mask may be Long, casting to it would
-        # truncate weights and break .mean(); the loss multiplies in float anyway.
-        weights = weights.float()
-        # broadcast per-sample weight to per-token, masked
-        w_tok = weights.view(-1, 1) * pad_mask.float()                     # (bs, L)
-
-        metrics["dataflex/weight_mean"] = float(weights.mean())
-        metrics["dataflex/weight_std"] = float(weights.std())
-        if self._df_meta["mechanism"] == "select":
-            metrics["dataflex/kept_frac"] = float((weights > 0).float().mean())
+            scores = self._df_scorer.score(dp, self.global_steps)          # (bs,) or (bs,L)
+            if token_level:
+                # token-granularity reweighting (e.g. Advantage Reweighting): the
+                # actuator returns a per-token weight matrix (bs, L); no broadcast.
+                w_tok = self._df_actuator.act(scores, dp).float() * pad_mask
+                # summary metric over valid tokens only
+                denom = pad_mask.sum().clamp(min=1.0)
+                metrics["dataflex/weight_mean"] = float((w_tok * pad_mask).sum() / denom)
+                metrics["dataflex/weight_std"] = float(w_tok[pad_mask.bool()].std())
+            else:
+                weights = self._weights_from_actuator(scores, dp, n).float()  # (bs,)
+                w_tok = weights.view(-1, 1) * pad_mask                        # (bs, L)
+                metrics["dataflex/weight_mean"] = float(weights.mean())
+                metrics["dataflex/weight_std"] = float(weights.std())
+                if self._df_meta["mechanism"] == "select":
+                    metrics["dataflex/kept_frac"] = float((weights > 0).float().mean())
 
         # persist rollout_is_weights so the actor loss picks it up
         out = {"rollout_is_weights": response_to_nested(w_tok, response_mask)}

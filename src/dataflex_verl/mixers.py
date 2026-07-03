@@ -76,3 +76,39 @@ class StaticMixer(Mixer):
 
     def act(self, scores, batch, **ctx) -> np.ndarray:
         return self._p
+
+
+@register_mixer("dump_ucb")
+class DumpUCBMixer(Mixer):
+    """UCB bandit over per-domain mean |advantage| (DUMP, arXiv:2504.09710).
+
+    Treats each domain as an arm whose value is its learnability = E[|advantage|]
+    over the window. UCB adds an exploration bonus for under-sampled domains, then
+    softmax over UCB scores gives proportions. Unlike reward_gap (exploit-only), this
+    explores; and |advantage| self-regulates (peaks at mid-difficulty), avoiding the
+    over-investment in unsolvable domains that a raw reward gap can cause.
+
+    ``scores`` is a dict {domain -> mean |advantage|}; visit counts come from ``ctx``
+    (the trainer passes cumulative per-domain sample counts).
+    """
+
+    def __init__(self, domains, temperature: float = 1.0, c: float = 1.0, floor: float = 0.05, **kwargs):
+        super().__init__(**kwargs)
+        self.domains = list(domains)
+        self.temperature = temperature
+        self.c = c            # exploration coefficient
+        self.floor = floor
+
+    def act(self, scores, batch, *, counts=None, **ctx) -> np.ndarray:
+        counts = counts or {}
+        vals = np.array([scores.get(d, 0.0) for d in self.domains], dtype=np.float64)
+        n_d = np.array([counts.get(d, 0) for d in self.domains], dtype=np.float64)
+        N = n_d.sum()
+        bonus = self.c * np.sqrt(2.0 * np.log(N + 1.0) / (n_d + 1.0))
+        ucb = vals + bonus
+        z = ucb / max(self.temperature, 1e-6)
+        z -= z.max()
+        p = np.exp(z)
+        p = p / p.sum()
+        p = np.maximum(p, self.floor)
+        return p / p.sum()

@@ -156,3 +156,49 @@ def test_build_mix_needs_domains_runtime():
     assert meta["mechanism"] == "mix"
     props = mixer.act({"a": 0.1, "b": 0.9}, None)
     assert abs(props.sum() - 1.0) < 1e-9
+
+
+# ---------------- new: token-level Advantage Reweighting ----------------
+
+def test_token_prob_scorer_shape_and_range():
+    s = REGISTRY.build("scorer", "token_prob", runtime={}, cfg={})
+    assert s.granularity == "token"
+    bs, L = 3, 4
+    logp = torch.log(torch.full((bs, L), 0.5))          # pi = 0.5 everywhere
+    b = FakeBatch({"old_log_probs": logp, "response_mask": torch.ones(bs, L)})
+    out = s.score(b, 0)
+    assert out.shape == (bs, L)
+    assert torch.allclose(out, torch.full((bs, L), 0.5), atol=1e-6)
+
+
+def test_advantage_reweighter_damps_low_prob_and_mean_one():
+    rw = REGISTRY.build("reweighter", "advantage_reweight", runtime={}, cfg={"alpha": 0.5})
+    # token probs: one low (0.1), one high (0.9)
+    pi = torch.tensor([[0.1, 0.9]])
+    mask = torch.ones(1, 2)
+    b = FakeBatch({"response_mask": mask})
+    w = rw.act(pi, b)
+    assert w.shape == (1, 2)
+    # low-prob token gets a smaller weight than high-prob token
+    assert w[0, 0] < w[0, 1]
+    # mean over valid tokens ~ 1
+    assert abs(float((w * mask).sum() / mask.sum()) - 1.0) < 1e-5
+
+
+# ---------------- new: DUMP-UCB mixer ----------------
+
+def test_dump_ucb_explores_undersampled_domain():
+    mx = REGISTRY.build("mixer", "dump_ucb", runtime={"domains": ["a", "b"]},
+                        cfg={"temperature": 1.0, "c": 1.0, "floor": 0.0})
+    # equal learnability, but domain b barely sampled -> b should get more (exploration)
+    props = mx.act({"a": 0.5, "b": 0.5}, None, counts={"a": 100, "b": 1})
+    assert abs(props.sum() - 1.0) < 1e-9
+    assert props[1] > props[0]
+
+
+def test_dump_ucb_exploits_high_advantage():
+    mx = REGISTRY.build("mixer", "dump_ucb", runtime={"domains": ["a", "b"]},
+                        cfg={"temperature": 0.5, "c": 0.1, "floor": 0.0})
+    # same counts, a has higher learnability -> a gets more
+    props = mx.act({"a": 1.0, "b": 0.1}, None, counts={"a": 50, "b": 50})
+    assert props[0] > props[1]
