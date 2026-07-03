@@ -1,0 +1,17 @@
+{
+  "name": "dataflex-rl-docs",
+  "version": "0.1.0",
+  "description": "Documentation site for DataFlex-RL",
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vuepress dev docs",
+    "docs:build": "vuepress build docs"
+  },
+  "devDependencies": {
+    "@vuepress/bundler-vite": "2.0.0-rc.24",
+    "vuepress": "2.0.0-rc.24",
+    "vuepress-theme-plume": "1.0.0-rc.180",
+    "vue": "^3.5.0",
+    "sass-embedded": "^1.83.0"
+  }
+}
