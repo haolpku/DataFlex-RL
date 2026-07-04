@@ -93,8 +93,10 @@ class DataFlexSyncTrainer(PPOTrainerSync):
         # read back the tensor fields our scorer needs (+ what we broadcast over).
         # Mirror verl's _compute_advantage: fetch uid alongside, then pop it out of the
         # padded tensordict into non_tensor_batch (raw TQ uid is a LinkedList, not a tensor).
-        want_uid = "uid" in self._df_scorer.requires
-        need = sorted((set(self._df_scorer.requires) | {"response_mask"}))
+        # Selectors may be group-based (GFPO / PODS group by uid), so fetch uid for any
+        # select mechanism too, not only when the scorer declares it.
+        want_uid = ("uid" in self._df_scorer.requires) or (self._df_meta["mechanism"] == "select")
+        need = sorted((set(self._df_scorer.requires) | {"response_mask"} | ({"uid"} if want_uid else set())))
         data = tq.kv_batch_get(keys=batch.keys, partition_id=batch.partition_id, select_fields=need)
         response_mask = data["response_mask"]
         dp = DataProto(batch=data.to_padded_tensor())
