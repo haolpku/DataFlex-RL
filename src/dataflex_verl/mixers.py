@@ -29,6 +29,24 @@ class DomainStatsTracker:
         b = self._buf[domain]
         return sum(b) / len(b) if b else default
 
+    def slope(self, domain: str, default: float = 0.0) -> float:
+        """Least-squares slope of the windowed reward series (TSCL learning progress).
+
+        Fits reward vs. observation index over the sliding window; returns dR/dstep.
+        Needs >=2 points, else `default`.
+        """
+        b = self._buf[domain]
+        n = len(b)
+        if n < 2:
+            return default
+        xs = list(range(n))
+        ys = list(b)
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        den = sum((x - mx) ** 2 for x in xs)
+        return num / den if den > 0 else default
+
     def domains(self):
         return list(self._buf.keys())
 
@@ -107,6 +125,38 @@ class DumpUCBMixer(Mixer):
         bonus = self.c * np.sqrt(2.0 * np.log(N + 1.0) / (n_d + 1.0))
         ucb = vals + bonus
         z = ucb / max(self.temperature, 1e-6)
+        z -= z.max()
+        p = np.exp(z)
+        p = p / p.sum()
+        p = np.maximum(p, self.floor)
+        return p / p.sum()
+
+
+@register_mixer("tscl")
+class TSCLMixer(Mixer):
+    """Teacher-Student Curriculum Learning (arXiv:1707.00183) as a domain mixer.
+
+    Sample domains in proportion to *learning progress* = |slope| of the domain's
+    reward curve. Both rising (still learning) and falling (forgetting) reward are
+    informative, so magnitude drives sampling. A distinct signal axis from reward_gap
+    (level) and dump_ucb (|advantage|): TSCL keys on the *rate of change*.
+
+    ``scores`` is a dict {domain -> reward slope} (the trainer computes it from
+    DomainStatsTracker.slope). softmax(|slope|/T) with a floor.
+    """
+
+    def __init__(self, domains, temperature: float = 1.0, floor: float = 0.05,
+                 signed: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self.domains = list(domains)
+        self.temperature = temperature
+        self.floor = floor
+        self.signed = signed   # True -> only reward improving domains (max(slope,0))
+
+    def act(self, scores, batch, **ctx) -> np.ndarray:
+        raw = np.array([scores.get(d, 0.0) for d in self.domains], dtype=np.float64)
+        prog = np.maximum(raw, 0.0) if self.signed else np.abs(raw)
+        z = prog / max(self.temperature, 1e-6)
         z -= z.max()
         p = np.exp(z)
         p = p / p.sum()

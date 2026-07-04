@@ -95,9 +95,9 @@ deadlock creating the colocated worker groups.
 | Kind | Names |
 |---|---|
 | scorer | `reward_difficulty`, `advantage_magnitude`, `group_solve_rate`, `token_prob` |
-| reweighter | `softmax`, `difficulty_band`, `advantage_reweight` |
-| selector | `threshold_band`, `topk_fraction` |
-| mixer | `reward_gap`, `static`, `dump_ucb` |
+| reweighter | `softmax`, `difficulty_band`, `advantage_reweight`, `per_advantage` |
+| selector | `threshold_band`, `topk_fraction`, `gfpo`, `max_variance` |
+| mixer | `reward_gap`, `static`, `dump_ucb`, `tscl` |
 
 ## Adding a component
 

@@ -202,3 +202,86 @@ def test_dump_ucb_exploits_high_advantage():
     # same counts, a has higher learnability -> a gets more
     props = mx.act({"a": 1.0, "b": 0.1}, None, counts={"a": 50, "b": 50})
     assert props[0] > props[1]
+
+
+# ---------------- new: GFPO / max_variance selectors ----------------
+
+def _batch_with_uid_len(rewards, uids, lengths):
+    import numpy as np
+    bs = len(rewards); L = max(lengths)
+    mask = torch.zeros(bs, L)
+    for i, l in enumerate(lengths):
+        mask[i, :l] = 1.0
+    tls = torch.zeros(bs, L); 
+    for i, r in enumerate(rewards): tls[i, -1] = r
+    b = FakeBatch({"token_level_scores": tls, "response_mask": mask},
+                  {"uid": np.array(uids, dtype=object)})
+    return b
+
+
+def test_gfpo_efficiency_keeps_high_reward_per_len():
+    sel = REGISTRY.build("selector", "gfpo", runtime={}, cfg={"k": 1, "metric": "efficiency"})
+    # one group of 3: same reward=1, different lengths -> keep the shortest (best R/L)
+    b = _batch_with_uid_len([1.0, 1.0, 1.0], ["g", "g", "g"], [10, 5, 20])
+    scores = torch.tensor([1.0, 1.0, 1.0])
+    keep = sel.act(scores, b)
+    assert keep == [1]  # index 1 has length 5 -> highest reward/length
+
+
+def test_gfpo_short_keeps_shortest():
+    sel = REGISTRY.build("selector", "gfpo", runtime={}, cfg={"k": 2, "metric": "short"})
+    b = _batch_with_uid_len([1, 1, 1, 1], ["g","g","g","g"], [8, 2, 6, 4])
+    keep = sel.act(torch.tensor([1.,1.,1.,1.]), b)
+    assert set(keep) == {1, 3}  # two shortest: len 2 and 4
+
+
+def test_max_variance_binary_picks_extremes():
+    sel = REGISTRY.build("selector", "max_variance", runtime={}, cfg={"keep_fraction": 0.5})
+    # group of 4 binary rewards [1,1,0,0]; keep n=2 maximizing variance -> one 1 + one 0
+    b = _batch_with_uid_len([1, 1, 0, 0], ["g","g","g","g"], [3,3,3,3])
+    keep = sel.act(torch.tensor([1.,1.,0.,0.]), b)
+    kept_r = sorted([1,1,0,0][i] for i in keep)
+    assert kept_r == [0, 1]  # one low + one high
+
+
+# ---------------- new: PER advantage reweighter ----------------
+
+def test_per_advantage_weights():
+    rw = REGISTRY.build("reweighter", "per_advantage", runtime={}, cfg={"alpha": 1.0})
+    scores = torch.tensor([0.0, 1.0, 2.0, 3.0])   # |A|
+    w = rw.act(scores, None)
+    assert abs(float(w.mean()) - 1.0) < 1e-5
+    assert w[3] > w[2] > w[1] > w[0]  # higher |A| -> higher weight
+
+
+def test_per_advantage_alpha_zero_uniform():
+    rw = REGISTRY.build("reweighter", "per_advantage", runtime={}, cfg={"alpha": 0.0})
+    w = rw.act(torch.tensor([0.1, 5.0, 100.0]), None)
+    assert torch.allclose(w, torch.ones(3), atol=1e-4)  # alpha=0 -> all ~1
+
+
+# ---------------- new: TSCL mixer ----------------
+
+def test_tscl_mixer_favors_steep_slope():
+    mx = REGISTRY.build("mixer", "tscl", runtime={"domains": ["a", "b"]},
+                        cfg={"temperature": 0.5, "floor": 0.0})
+    # domain a improving fast (slope 0.5), b flat (0) -> a gets more
+    props = mx.act({"a": 0.5, "b": 0.0}, None)
+    assert abs(props.sum() - 1.0) < 1e-9
+    assert props[0] > props[1]
+
+
+def test_tscl_abs_slope_forgetting_also_sampled():
+    mx = REGISTRY.build("mixer", "tscl", runtime={"domains": ["a", "b"]},
+                        cfg={"temperature": 0.5, "floor": 0.0, "signed": False})
+    # b is forgetting (slope -0.5); |slope| -> b sampled MORE than flat a
+    props = mx.act({"a": 0.0, "b": -0.5}, None)
+    assert props[1] > props[0]
+
+
+def test_domain_tracker_slope():
+    from dataflex_verl.mixers import DomainStatsTracker
+    t = DomainStatsTracker(window=10)
+    for v in [0.1, 0.2, 0.3, 0.4, 0.5]:   # rising
+        t.update("d", v)
+    assert t.slope("d") > 0.05

@@ -87,3 +87,22 @@ class AdvantageReweighter(Reweighter):
         denom = (w * mask).sum().clamp(min=1e-8)
         cnt = mask.sum().clamp(min=1.0)
         return w * (cnt / denom)
+
+
+@register_reweighter("per_advantage")
+class PERAdvantageReweighter(Reweighter):
+    """Prioritized-Experience-Replay style weighting on advantage magnitude
+    (PER, arXiv:1511.05952): w_i = |A_i|^alpha, mean-normalized to 1.
+
+    Pair with the `advantage_magnitude` scorer (per-sample |A|). alpha=0 -> uniform;
+    larger alpha -> sharper focus on high-|advantage| (high-surprise) samples.
+    """
+
+    def __init__(self, alpha: float = 0.5, **kwargs):
+        super().__init__(**kwargs)
+        self.alpha = alpha
+
+    def act(self, scores: torch.Tensor, batch, **ctx) -> torch.Tensor:
+        s = scores.float().flatten().abs()
+        w = (s + 1e-8) ** self.alpha
+        return _normalize_mean_one(w)
