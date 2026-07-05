@@ -142,3 +142,111 @@ class TokenProbScorer(Scorer):
     def score(self, batch, step_id, **ctx):
         logp = batch.batch["old_log_probs"]           # (bs, L)
         return logp.exp()                             # π in (0, 1]
+
+
+# --- On-Policy Distillation (OPD) signal ---------------------------------------
+#
+# When verl runs with distillation.enabled=true, the teacher scores every student
+# rollout during the Agent Loop and persists ``teacher_logprobs`` (shape (bs, L, 1|K))
+# into the batch. By the time our _compute_advantage hook fires, this field is present
+# alongside the student's ``old_log_probs`` — so we can form a teacher-student divergence
+# signal *for free* (no extra forward pass in DataFlex; the teacher pass already happened).
+#
+# The per-token reverse-KL term (Thinking Machines "On-Policy Distillation", 2025;
+# verl PG OPD uses the same k1/k3 estimators) is
+#     k_t = log pi_theta(y_t) - log nu(y_t)          # student_logp - teacher_logp
+# k_t > 0 means the student is MORE confident than the teacher at the sampled token
+# (over-committing) — the direction OPD pushes down. Both scorers below key on |k_t|
+# or (k_t)_+ depending on how the paired actuator uses it.
+#
+# ``teacher_logprobs`` may carry a trailing top-k axis (K>=1); the sampled-token logprob
+# is column 0 (verl packs the sampled token first), matching the single-sample estimator.
+
+_TEACHER_KEYS = ("teacher_logprobs", "teacher_log_probs")
+
+
+def _teacher_logp(batch):
+    """Fetch the teacher per-token logprob at the sampled token -> (bs, L).
+
+    Accepts (bs, L) or (bs, L, K); takes column 0 of the last axis when 3-D.
+    Raises a clear error (naming the OPD switch) if the field is absent.
+    """
+    b = batch.batch
+    for k in _TEACHER_KEYS:
+        if k in b:
+            t = b[k]
+            if t.dim() == 3:
+                t = t[..., 0]
+            return t
+    raise KeyError(
+        f"none of {_TEACHER_KEYS} found in batch (have {list(b.keys())}); "
+        "distill_* scorers require verl on-policy distillation "
+        "(set distillation.enabled=true so the teacher scores each rollout)."
+    )
+
+
+@register_scorer("distill_kl")
+class DistillKLScorer(Scorer):
+    """Per-token teacher-student divergence for OPD-driven data scheduling.
+
+    k_t = old_log_probs - teacher_logp  (reverse-KL term at the sampled token).
+    Returns a (bs, L) matrix; pair with a token-granularity reweighter to focus the
+    gradient where student and teacher disagree most.
+
+    ``mode``:
+      - "signed"  : raw k_t (can be +/-).
+      - "abs"     : |k_t|            (default; magnitude of disagreement).
+      - "pos"     : max(k_t, 0)      (only where student over-commits vs teacher).
+    """
+
+    requires = ["old_log_probs", "teacher_logprobs", "response_mask"]
+    timing = "post_advantage"
+    granularity = "token"
+    needs_groups = False
+
+    def __init__(self, mode: str = "abs", **kwargs):
+        super().__init__(**kwargs)
+        assert mode in ("signed", "abs", "pos")
+        self.mode = mode
+
+    def score(self, batch, step_id, **ctx):
+        student = batch.batch["old_log_probs"].float()   # (bs, L)
+        teacher = _teacher_logp(batch).float()           # (bs, L)
+        k = student - teacher                            # reverse-KL term
+        if self.mode == "abs":
+            return k.abs()
+        if self.mode == "pos":
+            return k.clamp(min=0.0)
+        return k
+
+
+@register_scorer("distill_gap")
+class DistillGapScorer(Scorer):
+    """Per-sequence teacher-student divergence (aggregate of distill_kl).
+
+    D_i = sum_t |k_t| / L_i  over valid tokens -> (bs,). A per-sample "how much is
+    still learnable from the teacher" signal; feed a Selector (keep high-gap samples)
+    or a Mixer (proportion domains by mean gap). ``mode`` matches DistillKLScorer.
+    """
+
+    requires = ["old_log_probs", "teacher_logprobs", "response_mask"]
+    timing = "post_advantage"
+    granularity = "prompt"
+    needs_groups = False
+
+    def __init__(self, mode: str = "abs", **kwargs):
+        super().__init__(**kwargs)
+        assert mode in ("signed", "abs", "pos")
+        self.mode = mode
+
+    def score(self, batch, step_id, **ctx):
+        student = batch.batch["old_log_probs"].float()
+        teacher = _teacher_logp(batch).float()
+        k = student - teacher
+        if self.mode == "abs":
+            k = k.abs()
+        elif self.mode == "pos":
+            k = k.clamp(min=0.0)
+        mask = batch.batch["response_mask"].to(k.dtype)
+        denom = mask.sum(dim=-1).clamp(min=1.0)
+        return (k * mask).sum(dim=-1) / denom            # (bs,)

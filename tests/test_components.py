@@ -285,3 +285,83 @@ def test_domain_tracker_slope():
     for v in [0.1, 0.2, 0.3, 0.4, 0.5]:   # rising
         t.update("d", v)
     assert t.slope("d") > 0.05
+
+
+# ---------------- new: OPD distillation signal (distill_kl / distill_gap) ----------------
+
+def _distill_batch(student_logp, teacher_logp, mask=None, teacher_topk=False):
+    """Build a fake batch with student old_log_probs + teacher_logprobs.
+
+    student_logp / teacher_logp: (bs, L) python lists or tensors.
+    teacher_topk: if True, give teacher_logprobs a trailing (K) axis (sampled token
+    at column 0) to exercise the 3-D squeeze path.
+    """
+    s = torch.as_tensor(student_logp, dtype=torch.float32)
+    t = torch.as_tensor(teacher_logp, dtype=torch.float32)
+    bs, L = s.shape
+    if mask is None:
+        mask = torch.ones(bs, L)
+    tl = t.unsqueeze(-1) if teacher_topk else t          # (bs,L,1) or (bs,L)
+    if teacher_topk:  # pad a 2nd (non-sampled) top-k column that must be ignored
+        tl = torch.cat([t.unsqueeze(-1), torch.full((bs, L, 1), -99.0)], dim=-1)
+    return FakeBatch({"old_log_probs": s, "teacher_logprobs": tl, "response_mask": mask})
+
+
+def test_distill_kl_signed_abs_pos():
+    # student more confident than teacher at t0 (k>0), less at t1 (k<0)
+    student = [[-0.5, -2.0]]
+    teacher = [[-1.5, -0.5]]                              # k = [+1.0, -1.5]
+    for mode, expect in [("signed", [[1.0, -1.5]]),
+                         ("abs",    [[1.0, 1.5]]),
+                         ("pos",    [[1.0, 0.0]])]:
+        s = REGISTRY.build("scorer", "distill_kl", runtime={}, cfg={"mode": mode})
+        assert s.granularity == "token"
+        out = s.score(_distill_batch(student, teacher), 0)
+        assert out.shape == (1, 2)
+        assert torch.allclose(out, torch.tensor(expect), atol=1e-6), (mode, out)
+
+
+def test_distill_kl_teacher_topk_axis():
+    # 3-D teacher_logprobs (sampled token at col 0) must give same result as 2-D
+    student, teacher = [[-0.5, -2.0]], [[-1.5, -0.5]]
+    s = REGISTRY.build("scorer", "distill_kl", runtime={}, cfg={"mode": "signed"})
+    out2d = s.score(_distill_batch(student, teacher, teacher_topk=False), 0)
+    out3d = s.score(_distill_batch(student, teacher, teacher_topk=True), 0)
+    assert torch.allclose(out2d, out3d, atol=1e-6)
+
+
+def test_distill_gap_seq_aggregate_and_mask():
+    # two seqs; seq0 disagreement bigger. mask off the last token of seq1.
+    student = [[-0.5, -2.0], [-1.0, -1.0]]
+    teacher = [[-1.5, -0.5], [-1.2, 10.0]]               # |k| = [[1.0,1.5],[0.2,11.0]]
+    mask = torch.tensor([[1.0, 1.0], [1.0, 0.0]])        # drop seq1 t1
+    s = REGISTRY.build("scorer", "distill_gap", runtime={}, cfg={"mode": "abs"})
+    assert s.granularity == "prompt"
+    out = s.score(_distill_batch(student, teacher, mask=mask), 0)
+    assert out.shape == (2,)
+    # seq0 mean |k| = (1.0+1.5)/2 = 1.25 ; seq1 = 0.2/1 = 0.2 (t1 masked out)
+    assert torch.allclose(out, torch.tensor([1.25, 0.2]), atol=1e-6)
+
+
+def test_distill_missing_teacher_field_errors_clearly():
+    s = REGISTRY.build("scorer", "distill_kl", runtime={}, cfg={})
+    b = FakeBatch({"old_log_probs": torch.zeros(1, 2), "response_mask": torch.ones(1, 2)})
+    import pytest
+    with pytest.raises(KeyError, match="distillation.enabled"):
+        s.score(b, 0)
+
+
+def test_distill_gap_feeds_selector_and_reweighter():
+    # end-to-end wiring: distill_gap -> selector keeps high-gap; distill_kl -> reweighter
+    student = [[-0.5, -2.0], [-1.0, -1.0], [-0.9, -0.9]]
+    teacher = [[-2.5, -3.0], [-1.05, -1.0], [-0.92, -0.9]]  # seq0 huge gap, seq2 tiny
+    b = _distill_batch(student, teacher)
+    gap = REGISTRY.build("scorer", "distill_gap", runtime={}, cfg={"mode": "abs"})
+    sel = REGISTRY.build("selector", "topk_fraction", runtime={}, cfg={"fraction": 0.34})
+    keep = sel.act(gap.score(b, 0), b)
+    assert keep == [0]                                    # highest-gap seq survives
+    kl = REGISTRY.build("scorer", "distill_kl", runtime={}, cfg={"mode": "abs"})
+    rw = REGISTRY.build("reweighter", "advantage_reweight", runtime={}, cfg={"alpha": 0.5})
+    # distill_kl is token-granularity; reweighter consumes (bs,L) and returns (bs,L)
+    w = rw.act(kl.score(b, 0).clamp(max=1.0), b)          # clamp: reuse pi-in-(0,1] path
+    assert w.shape == (3, 2)
