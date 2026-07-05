@@ -60,7 +60,8 @@ class DataFlexSyncTrainer(PPOTrainerSync):
         df_cfg = config.get("dataflex", None)
         if df_cfg is not None and df_cfg.get("mechanism", None) in self._SUPPORTED:
             self._df_scorer, self._df_actuator, self._df_meta = build_from_config(
-                df_cfg, adv_estimator=str(config.algorithm.adv_estimator)
+                df_cfg, adv_estimator=str(config.algorithm.adv_estimator),
+                distillation=config.get("distillation", None),
             )
             logger.info(
                 f"[DataFlex] {self._df_meta['mechanism']} enabled: "
@@ -163,6 +164,7 @@ class DataFlexMixSyncTrainer(PPOTrainerSync):
             self._df_scorer, self._df_mixer, self._df_meta = build_from_config(
                 df_cfg, adv_estimator=str(config.algorithm.adv_estimator),
                 runtime={"domains": domains},
+                distillation=config.get("distillation", None),
             )
             self._df_tracker = DomainStatsTracker(window=int(df_cfg.get("window", 50)))
             # start from static prior (uniform) so the buffer has something during warmup

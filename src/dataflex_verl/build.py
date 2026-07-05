@@ -16,7 +16,7 @@ The `config.dataflex` block (added to verl's YAML) looks like::
 This module is import-light so it can be unit-tested without verl.
 """
 
-from .core.config import validate_compat
+from .core.config import validate_compat, validate_opd_compat
 from .core.registry import REGISTRY
 
 # ensure component classes are registered
@@ -42,11 +42,14 @@ def _as_dict(x):
     return dict(x)
 
 
-def build_from_config(dataflex_cfg, *, adv_estimator=None, runtime=None):
+def build_from_config(dataflex_cfg, *, adv_estimator=None, runtime=None, distillation=None):
     """Return (scorer, actuator, meta) built from a `config.dataflex` block.
 
     ``runtime`` supplies actuator constructor deps not in cfg (e.g. domains list for
     a Mixer). ``adv_estimator`` is used to reject group-only scorers on non-group algos.
+    ``distillation`` is verl's ``config.distillation`` block (or None); it lets the
+    OPD compatibility check reject teacher scorers when distillation is off, or when
+    reweight/select is combined with GKD (which ignores rollout_is_weights).
     """
     cfg = _as_dict(dataflex_cfg)
     runtime = runtime or {}
@@ -62,6 +65,7 @@ def build_from_config(dataflex_cfg, *, adv_estimator=None, runtime=None):
         "scorer", scorer_cfg["name"], runtime={}, cfg=_as_dict(scorer_cfg.get("params"))
     )
     validate_compat(scorer, adv_estimator=adv_estimator)
+    validate_opd_compat(scorer, mechanism, distillation=_as_dict(distillation))
 
     actuator = REGISTRY.build(
         _ACTUATOR_KIND[mechanism],

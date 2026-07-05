@@ -59,3 +59,48 @@ def validate_compat(scorer, adv_estimator: Optional[str] = None) -> None:
                 f"but adv_estimator={adv_estimator!r} is not group-based "
                 f"(expected one of {sorted(GROUP_ADV_ESTIMATORS)})."
             )
+
+
+# fields that only exist when verl on-policy distillation is running
+_TEACHER_FIELDS = {"teacher_logprobs", "teacher_log_probs"}
+
+
+def validate_opd_compat(scorer, mechanism: str, distillation: Optional[Dict[str, Any]] = None) -> None:
+    """Validate DataFlex + verl on-policy-distillation (OPD) combinations at mount time.
+
+    A scorer that reads a teacher field (distill_*) needs OPD enabled. And because
+    verl's GKD path (``use_policy_gradient=false``) backprops the distillation loss
+    directly WITHOUT multiplying ``rollout_is_weights`` (see
+    verl/trainer/distillation/losses.py), reweight/select — which act purely through
+    that weight field — silently no-op under GKD. Mix is unaffected (it changes the
+    sampling distribution, not the loss). So:
+
+      - teacher-dependent scorer + OPD disabled            -> error (no teacher field).
+      - teacher-dependent scorer + reweight/select + GKD   -> error (weights ignored).
+      - teacher-dependent scorer + mix                     -> allowed under any mode.
+    """
+    needs_teacher = bool(_TEACHER_FIELDS & set(getattr(scorer, "requires", [])))
+    if not needs_teacher:
+        return
+
+    distillation = distillation or {}
+    enabled = bool(distillation.get("enabled", False))
+    if not enabled:
+        raise ValueError(
+            f"Scorer {type(scorer).__name__} reads a teacher field "
+            f"({sorted(_TEACHER_FIELDS & set(scorer.requires))}) but distillation.enabled is not set. "
+            "Enable verl on-policy distillation (distillation.enabled=true) so the teacher "
+            "scores each rollout, or use a non-teacher scorer."
+        )
+
+    if mechanism in ("reweight", "select"):
+        loss_cfg = distillation.get("distillation_loss", {}) or {}
+        use_pg = loss_cfg.get("use_policy_gradient", False)
+        if not use_pg:
+            raise ValueError(
+                f"DataFlex '{mechanism}' with a teacher scorer requires PG OPD "
+                "(distillation.distillation_loss.use_policy_gradient=true). Under GKD "
+                "(use_policy_gradient=false) verl backprops the distillation loss directly "
+                "and ignores rollout_is_weights, so reweight/select would silently no-op. "
+                "Use PG OPD, or switch mechanism to 'mix' (which does not depend on the loss)."
+            )
