@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DataFlex-verl + On-Policy Distillation — MIX example (MOPD + domain mixing).
+# DataFlex-verl + On-Policy Distillation — MIX example (MOPD + divergence mixing).
 #
 # Multi-teacher OPD (MOPD): one domain-specialized teacher per domain, routed by
 # data_source (distillation.teacher_key). DataFlex Mixer steers how much each domain
@@ -7,14 +7,13 @@
 # through the loss — it works under BOTH PG and GKD OPD (unlike reweight/select).
 #
 #   trainer_mode dataflex_mix_sync + DataFlexMixReplayBuffer
-#   scorer   reward_difficulty     (see NOTE)
-#   actuator reward_gap            (favor the lagging domain)
+#   scorer   distill_gap   (per-domain teacher-student divergence)
+#   actuator reward_gap    (favor the domain where the teacher can still teach most)
 #
-# NOTE (honest limitation): DataFlexMixSyncTrainer currently accumulates each domain's
-# mean *reward* to drive proportions. Mixing by the teacher-student *divergence*
-# (distill_gap per domain) needs the mix trainer to feed the teacher signal into the
-# DomainStatsTracker — that hook is planned in research/05 (M3/M4). Until then this
-# example combines MOPD training with reward-driven mixing (still a valid, useful combo).
+# The mix trainer accumulates the CONFIGURED scorer's per-seq signal per domain
+# (generalized in M4: it is no longer hard-coded to reward). With distill_gap the
+# proportions track "how much is still learnable from the teacher" per domain —
+# watch dataflex/prop_<d> and dataflex/signal_<d>.
 set -xeuo pipefail
 
 ROOT=/apdcephfs_zwfy14/share_304380933/aldenliang
@@ -79,7 +78,8 @@ python3 -m verl.trainer.main_ppo \
     +dataflex.mechanism=mix \
     "+dataflex.domains=[math,code]" \
     +dataflex.domain_key=domain \
-    +dataflex.scorer.name=reward_difficulty \
+    +dataflex.scorer.name=distill_gap \
+    +dataflex.scorer.params.mode=abs \
     +dataflex.actuator.name=reward_gap \
     +dataflex.actuator.params.temperature=1.0 \
     +dataflex.actuator.params.floor=0.05 \

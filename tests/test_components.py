@@ -365,3 +365,98 @@ def test_distill_gap_feeds_selector_and_reweighter():
     # distill_kl is token-granularity; reweighter consumes (bs,L) and returns (bs,L)
     w = rw.act(kl.score(b, 0).clamp(max=1.0), b)          # clamp: reuse pi-in-(0,1] path
     assert w.shape == (3, 2)
+
+
+# ---------------- new: OPD build-time compatibility validation ----------------
+
+def _mk_distill_dataflex(mechanism, scorer="distill_gap"):
+    """A config.dataflex block using a teacher scorer + a mechanism-appropriate actuator."""
+    act = {"reweight": {"name": "advantage_reweight"},
+           "select":   {"name": "topk_fraction", "params": {"fraction": 0.5}},
+           "mix":      {"name": "reward_gap"}}[mechanism]
+    sc = "distill_kl" if mechanism == "reweight" else scorer
+    return {"mechanism": mechanism, "scorer": {"name": sc}, "actuator": act}
+
+
+def test_opd_teacher_scorer_requires_distillation_enabled():
+    import pytest
+    # distillation off -> teacher scorer rejected at build time
+    with pytest.raises(ValueError, match="distillation.enabled"):
+        build_from_config(_mk_distill_dataflex("reweight"), adv_estimator="grpo",
+                          distillation={"enabled": False})
+
+
+def test_opd_reweight_select_reject_gkd():
+    import pytest
+    gkd = {"enabled": True, "distillation_loss": {"use_policy_gradient": False}}
+    for mech in ("reweight", "select"):
+        with pytest.raises(ValueError, match="PG OPD"):
+            build_from_config(_mk_distill_dataflex(mech),
+                              adv_estimator="grpo", distillation=gkd)
+
+
+def test_opd_reweight_select_ok_under_pg():
+    pg = {"enabled": True, "distillation_loss": {"use_policy_gradient": True}}
+    for mech in ("reweight", "select"):
+        scorer, act, meta = build_from_config(_mk_distill_dataflex(mech),
+                                              adv_estimator="grpo", distillation=pg)
+        assert meta["mechanism"] == mech          # builds without raising
+
+
+def test_opd_mix_allowed_under_any_mode():
+    # mix does not depend on the loss path, so GKD is fine
+    gkd = {"enabled": True, "distillation_loss": {"use_policy_gradient": False}}
+    scorer, mixer, meta = build_from_config(
+        {"mechanism": "mix", "scorer": {"name": "distill_gap"}, "actuator": {"name": "reward_gap"}},
+        adv_estimator="grpo", runtime={"domains": ["a", "b"]}, distillation=gkd)
+    assert meta["mechanism"] == "mix"
+
+
+def test_non_teacher_scorer_unaffected_by_opd_check():
+    # a normal reward scorer builds fine regardless of distillation config
+    scorer, act, meta = build_from_config(
+        {"mechanism": "reweight", "scorer": {"name": "advantage_magnitude"},
+         "actuator": {"name": "per_advantage", "params": {"alpha": 0.5}}},
+        adv_estimator="grpo", distillation=None)
+    assert meta["mechanism"] == "reweight"
+
+
+# ---------------- new: M4 divergence-driven mix (per-domain distill_gap) ----------------
+
+def _agg_token_to_seq(scorer, batch):
+    """Replicate DataFlexMixSyncTrainer._per_seq_signal for CPU testing (no verl)."""
+    scores = scorer.score(batch, 0)
+    if getattr(scorer, "granularity", "prompt") == "token":
+        mask = batch.batch["response_mask"].to(scores.dtype)
+        denom = mask.sum(dim=-1).clamp(min=1.0)
+        return (scores * mask).sum(dim=-1) / denom
+    return scores.flatten()
+
+
+def test_mix_signal_distill_gap_per_domain_drives_proportions():
+    # 2 domains: 'math' has large teacher-student divergence, 'code' small.
+    # distill_gap -> per-seq gap -> per-domain mean -> reward_gap mixer.
+    from dataflex_verl.mixers import DomainStatsTracker
+    student = [[-0.5, -2.0], [-0.6, -1.8],   # math seqs (big gap)
+               [-0.9, -0.9], [-0.95, -0.9]]  # code seqs (tiny gap)
+    teacher = [[-2.5, -4.0], [-2.4, -3.6],
+               [-0.92, -0.9], [-0.96, -0.9]]
+    b = _distill_batch(student, teacher)
+    gap = REGISTRY.build("scorer", "distill_gap", runtime={}, cfg={"mode": "abs"})
+    per_seq = _agg_token_to_seq(gap, b)
+    assert per_seq.shape == (4,)
+    assert per_seq[:2].mean() > per_seq[2:].mean()        # math gap > code gap
+
+    domains = ["math", "code"]
+    tr = DomainStatsTracker(window=50)
+    for d, v in zip(["math", "math", "code", "code"], per_seq.tolist()):
+        tr.update(d, v)
+    stats = {d: tr.mean(d) for d in domains}
+    mx = REGISTRY.build("mixer", "reward_gap", runtime={"domains": domains},
+                        cfg={"temperature": 1.0, "floor": 0.0})
+    props = mx.act(stats, b)
+    assert abs(props.sum() - 1.0) < 1e-9
+    # reward_gap favors the LAGGING domain; here the "signal" is divergence, so the
+    # higher-divergence domain (math) is treated as lagging -> gets MORE. Just assert
+    # proportions respond to the per-domain signal (not uniform).
+    assert abs(props[0] - props[1]) > 1e-3

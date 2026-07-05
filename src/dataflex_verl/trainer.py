@@ -213,20 +213,36 @@ class DataFlexMixSyncTrainer(PPOTrainerSync):
         tq.kv_batch_put(keys=list(batch["uid"]), partition_id="train", tags=tags)
         self.agent_loop_manager.generate_sequences(batch)
 
+    def _per_seq_signal(self, dp):
+        """Per-sequence domain signal from the configured scorer.
+
+        Generalizes the old hard-coded "mean rm_scores" so a Mixer can be driven by
+        ANY scorer's signal. ``reward_difficulty`` reproduces the reward level exactly;
+        ``distill_gap`` (OPD) yields per-domain teacher-student divergence — mixing by
+        "how much the teacher can still teach in this domain". A token-granularity
+        scorer is mean-aggregated over valid tokens to a per-seq scalar.
+        """
+        scores = self._df_scorer.score(dp, self.global_steps)   # (bs,) or (bs, L)
+        if getattr(self._df_scorer, "granularity", "prompt") == "token":
+            mask = dp.batch["response_mask"].to(scores.dtype)
+            denom = mask.sum(dim=-1).clamp(min=1.0)
+            return (scores * mask).sum(dim=-1) / denom
+        return scores.flatten()
+
     def _compute_advantage(self, batch, metrics):
         batch = super()._compute_advantage(batch, metrics)
         if self._df_mixer is None:
             return batch
 
-        # accumulate per-domain mean reward from this batch
+        # fetch exactly the fields the scorer needs (+ response_mask) so the mix
+        # signal can be reward, teacher-divergence, etc. — whatever the scorer reads.
+        need = sorted(set(self._df_scorer.requires) | {"response_mask"})
         data = tq.kv_batch_get(
-            keys=batch.keys, partition_id=batch.partition_id,
-            select_fields=["rm_scores", "response_mask"],
+            keys=batch.keys, partition_id=batch.partition_id, select_fields=need,
         )
         dp = DataProto(batch=data.to_padded_tensor())
-        scores = dp.batch["rm_scores"]
-        mask = dp.batch["response_mask"]
-        per_seq = (scores * mask.to(scores.dtype)).sum(dim=-1)  # (bs,)
+        with torch.no_grad():
+            per_seq = self._per_seq_signal(dp)  # (bs,)
 
         # domain per row from prompt tags
         domains_per_row = []
@@ -245,5 +261,5 @@ class DataFlexMixSyncTrainer(PPOTrainerSync):
             _rb.set_proportions(self._df_domains, list(props))
             for d, p in zip(self._df_domains, props):
                 metrics[f"dataflex/prop_{d}"] = float(p)
-                metrics[f"dataflex/reward_{d}"] = float(stats[d])
+                metrics[f"dataflex/signal_{d}"] = float(stats[d])
         return batch
