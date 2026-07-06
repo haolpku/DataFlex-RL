@@ -30,7 +30,7 @@ python3 -m verl.trainer.main_ppo \
     custom_reward_function.name=compute_score \
     data.train_batch_size=64 \
     data.max_prompt_length=1024 \
-    data.max_response_length=2048 \
+    data.max_response_length=8192 \
     data.dataloader_num_workers=0 \
     data.seed=$SEED \
     actor_rollout_ref.model.path="$MODEL" \
