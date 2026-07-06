@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Generate the multi-seed job list for the queue (Paper 2 statistical backbone).
-# 9 algos x seeds{2,3} = 18 jobs. Format per line:  name|seed|DF_ARGS
+# Scales x algos x seeds. Format per line:  scale|name|seed|DF_ARGS
+#   scale = 7b | 05b  (selects the driver in queue_worker.sh)
 # DF_ARGS mirror experiments/run_seeds_7b.sh exactly (same unified setting as seed-1).
+# Default: 7B seeds{2,3} (18) + 0.5B seeds{1,2,3} (27) — user-confirmed 2026-07-06.
 set -euo pipefail
 QROOT=/jizhicfs/aldenliang/queue
 mkdir -p "$QROOT"
@@ -20,12 +22,15 @@ RUN[softmax]="$DF +dataflex.mechanism=reweight +dataflex.scorer.name=advantage_m
 RUN[diffband]="$DF +dataflex.mechanism=reweight +dataflex.scorer.name=reward_difficulty +dataflex.actuator.name=difficulty_band +dataflex.warmup_step=0"
 
 ALGOS="baseline ar difffilter gfpo maxvar topk per softmax diffband"
-SEEDS="${SEEDS:-2 3}"
+# 7B: seed-1 already trained on this box -> only fill {2,3}. 0.5B: no jizhicfs seeds yet -> {1,2,3}.
+SEEDS_7B="${SEEDS_7B:-2 3}"
+SEEDS_05B="${SEEDS_05B:-1 2 3}"
 
 : > "$OUT"
-for seed in $SEEDS; do
-  for name in $ALGOS; do
-    printf '%s|%s|%s\n' "$name" "$seed" "${RUN[$name]}" >> "$OUT"
-  done
+for seed in $SEEDS_7B; do
+  for name in $ALGOS; do printf '7b|%s|%s|%s\n' "$name" "$seed" "${RUN[$name]}" >> "$OUT"; done
 done
-echo "wrote $(wc -l < "$OUT") jobs to $OUT"
+for seed in $SEEDS_05B; do
+  for name in $ALGOS; do printf '05b|%s|%s|%s\n' "$name" "$seed" "${RUN[$name]}" >> "$OUT"; done
+done
+echo "wrote $(wc -l < "$OUT") jobs to $OUT ($(grep -c '^7b|' "$OUT") x7B + $(grep -c '^05b|' "$OUT") x0.5B)"
