@@ -13,8 +13,8 @@ QWEN_EVAL=$ROOT/frameworks/Qwen2.5-Math/evaluation
 LOGDIR=$ROOT/df_logs_7b/eval
 mkdir -p "$LOGDIR"
 
-RUNS="baseline ar difffilter"
-DATASETS="gsm8k math amc23 aime24"
+RUNS="${RUNS:-baseline ar difffilter}"
+DATASETS="${DATASETS:-gsm8k math amc23 aime24}"
 MAXTOK=4096
 NGPU=8
 
@@ -33,7 +33,10 @@ echo ">> ${#JOBS[@]} jobs across $NGPU GPUs, max_tokens=$MAXTOK"
 run_one() {
   local gpu="$1" run="$2" ds="$3"
   local HF="$CKPT/$run/$STEP/actor/huggingface"
-  CUDA_VISIBLE_DEVICES=$gpu taskset -c $((gpu*8))-$((gpu*8+7)) \
+  # Per-job vLLM compile cache: parallel jobs sharing /root/.cache/vllm collide on
+  # torch_compile temp files (FileNotFoundError). Isolate each job's cache root.
+  local VC="/tmp/vllm_cache_${run}_${ds}"
+  VLLM_CACHE_ROOT="$VC" CUDA_VISIBLE_DEVICES=$gpu taskset -c $((gpu*8))-$((gpu*8+7)) \
     python -u "$QWEN_EVAL/math_eval.py" \
       --model_name_or_path "$HF" \
       --data_names "$ds" \
