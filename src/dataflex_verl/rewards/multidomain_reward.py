@@ -81,12 +81,29 @@ def compute_sciq(solution_str: str, ground_truth: str) -> float:
 
 # ----------------------------- dispatcher -----------------------------
 def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+    """Return a UNIFORM dict {score, acc, pred} for EVERY domain.
+
+    verl's process_validation_metrics averages each extra-info field per data_source;
+    if math returns {score,acc,pred} but logic/science return a bare float, the missing
+    acc/pred become None and np.mean() crashes. So we normalize all domains to the same
+    dict shape (see bug-001).
+    """
     ds = str(data_source)
     if ds in ("kk_logic", "knights-and-knaves", "logic"):
-        return compute_kk(solution_str, ground_truth)
+        s = compute_kk(solution_str, ground_truth)
+        return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
     if ds in ("sciq", "science"):
-        return compute_sciq(solution_str, ground_truth)
-    # math (and anything else) -> verl's built-in dispatcher
+        s = compute_sciq(solution_str, ground_truth)
+        return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
+    # math (and anything else) -> verl's built-in dispatcher (math_dapo returns a dict)
     from verl.utils.reward_score import default_compute_score
 
-    return default_compute_score(data_source, solution_str, ground_truth, extra_info)
+    res = default_compute_score(data_source, solution_str, ground_truth, extra_info)
+    if isinstance(res, dict):
+        # ensure the same keys exist as the logic/science branch
+        res.setdefault("score", float(res.get("acc", 0.0)))
+        res.setdefault("acc", bool(res.get("score", 0.0) > 0))
+        res.setdefault("pred", "")
+        return res
+    return {"score": float(res), "acc": bool(res > 0), "pred": ""}
+
