@@ -28,6 +28,8 @@ python3 -m verl.trainer.main_ppo \
     data.val_files="$DATA/test.parquet" \
     custom_reward_function.path="$ROOT/DataFlex-RL/src/dataflex_verl/rewards/multidomain_reward.py" \
     custom_reward_function.name=compute_score \
+    reward.custom_reward_function.path="$ROOT/DataFlex-RL/src/dataflex_verl/rewards/multidomain_reward.py" \
+    reward.custom_reward_function.name=compute_score \
     data.train_batch_size=64 \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
