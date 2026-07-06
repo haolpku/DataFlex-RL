@@ -43,7 +43,7 @@ while :; do
 
   drv="$(driver_for "$CSCALE")"
   log "START $claimed  driver=$(basename "$drv")  DF_ARGS=[$CDFARGS]"
-  EXP_NAME="${CNAME}_s${CSEED}" DATA_DIR="$ROOT/data/dapo_math" DF_ARGS="$CDFARGS" SEED="$CSEED" \
+  EXP_NAME="${CNAME}_s${CSEED}" DATA_DIR="$ROOT/data/multidomain_3" DF_ARGS="$CDFARGS" SEED="$CSEED" \
     CKPT_ROOT="$CCKROOT" \
     bash "$drv" > "$LOGDIR/$claimed.log" 2>&1
   rc=$?

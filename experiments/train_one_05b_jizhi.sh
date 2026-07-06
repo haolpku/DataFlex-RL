@@ -7,7 +7,7 @@ set -xeuo pipefail
 ROOT=/jizhicfs/aldenliang
 export PATH=$ROOT/miniconda3/envs/verl/bin:$PATH
 MODEL=$ROOT/models/Qwen2.5-0.5B-Instruct
-DATA=${DATA_DIR:-$ROOT/data/dapo_math}
+DATA=${DATA_DIR:-$ROOT/data/multidomain_3}
 CKPT_ROOT=${CKPT_ROOT:-$ROOT/df_ckpts_05b_seeds}
 EXP_NAME=${EXP_NAME:?set EXP_NAME}
 DF_ARGS=${DF_ARGS:-}
@@ -26,6 +26,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files="$DATA/train.parquet" \
     data.val_files="$DATA/test.parquet" \
+    custom_reward_function.path="$ROOT/DataFlex-RL/src/dataflex_verl/rewards/multidomain_reward.py" \
+    custom_reward_function.name=compute_score \
     data.train_batch_size=64 \
     data.max_prompt_length=1024 \
     data.max_response_length=2048 \

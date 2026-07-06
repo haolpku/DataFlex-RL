@@ -2,8 +2,8 @@
 # Generate the multi-seed job list for the queue (Paper 2 statistical backbone).
 # Scales x algos x seeds. Format per line:  scale|name|seed|DF_ARGS
 #   scale = 7b | 05b  (selects the driver in queue_worker.sh)
-# DF_ARGS mirror experiments/run_seeds_7b.sh exactly (same unified setting as seed-1).
-# Default: 7B seeds{2,3} (18) + 0.5B seeds{1,2,3} (27) — user-confirmed 2026-07-06.
+# Main experiment = 3-domain multidomain_3 (math+logic+science). Old single-domain
+# dapo_math seed-1 runs are DISCARDED, so BOTH scales run seeds {1,2,3} from scratch.
 set -euo pipefail
 QROOT=/jizhicfs/aldenliang/queue
 mkdir -p "$QROOT"
@@ -22,8 +22,8 @@ RUN[softmax]="$DF +dataflex.mechanism=reweight +dataflex.scorer.name=advantage_m
 RUN[diffband]="$DF +dataflex.mechanism=reweight +dataflex.scorer.name=reward_difficulty +dataflex.actuator.name=difficulty_band +dataflex.warmup_step=0"
 
 ALGOS="baseline ar difffilter gfpo maxvar topk per softmax diffband"
-# 7B: seed-1 already trained on this box -> only fill {2,3}. 0.5B: no jizhicfs seeds yet -> {1,2,3}.
-SEEDS_7B="${SEEDS_7B:-2 3}"
+# both scales from scratch on the 3-domain set: seeds {1,2,3}
+SEEDS_7B="${SEEDS_7B:-1 2 3}"
 SEEDS_05B="${SEEDS_05B:-1 2 3}"
 
 : > "$OUT"
