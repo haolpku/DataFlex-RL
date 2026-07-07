@@ -43,6 +43,8 @@ while :; do
 
   drv="$(driver_for "$CSCALE")"
   log "START $claimed  driver=$(basename "$drv")  DF_ARGS=[$CDFARGS]"
+  # clean any residual GPU procs before starting (a prior crash can leak vllm engine cores)
+  source "$ROOT/DataFlex-RL/experiments/df_gpu_cleanup.sh" 2>/dev/null && df_gpu_cleanup || true
   EXP_NAME="${CNAME}_s${CSEED}" DATA_DIR="$ROOT/data/multidomain_3" DF_ARGS="$CDFARGS" SEED="$CSEED" \
     CKPT_ROOT="$CCKROOT" \
     bash "$drv" > "$LOGDIR/$claimed.log" 2>&1
@@ -55,6 +57,9 @@ while :; do
     mv "$CLAIMS/$claimed" "$CLAIMS/${claimed}.failed.$$" 2>/dev/null || true
   fi
   ray stop --force >/dev/null 2>&1 || true
-  pkill -9 -f raylet 2>/dev/null || true; pkill -9 -f "ray::" 2>/dev/null || true
-  sleep 10
+  source "$ROOT/DataFlex-RL/experiments/df_gpu_cleanup.sh" 2>/dev/null && df_gpu_cleanup || {
+    pkill -9 -f raylet 2>/dev/null || true; pkill -9 -f "ray::" 2>/dev/null || true
+    pkill -9 -f "VLLM::EngineCore" 2>/dev/null || true; pkill -9 -f main_ppo 2>/dev/null || true
+    sleep 8
+  }
 done
