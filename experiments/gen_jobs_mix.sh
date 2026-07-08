@@ -15,7 +15,7 @@ RUN[reward_gap]="$COMMON +dataflex.actuator.name=reward_gap +dataflex.actuator.p
 RUN[dump_ucb]="$COMMON +dataflex.actuator.name=dump_ucb +dataflex.actuator.params.temperature=1.0 +dataflex.actuator.params.c=1.0 +dataflex.actuator.params.floor=0.05"
 RUN[tscl]="$COMMON +dataflex.actuator.name=tscl +dataflex.actuator.params.temperature=1.0 +dataflex.actuator.params.floor=0.05"
 # static uniform = the fixed-ratio control (mixture's honest baseline)
-RUN[static]="+dataflex.actuator.name=static"
+RUN[static]="+dataflex.scorer.name=reward_difficulty +dataflex.actuator.name=static +dataflex.warmup_step=1 +dataflex.update_step=1 +dataflex.window=50"
 
 MIXERS="${MIXERS:-reward_gap dump_ucb tscl static}"
 SEEDS="${SEEDS:-1 2 3}"
