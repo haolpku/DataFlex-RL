@@ -89,10 +89,11 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
     dict shape (see bug-001).
     """
     ds = str(data_source)
-    if ds in ("kk_logic", "knights-and-knaves", "logic"):
+    if ds in ("kk_logic", "knights-and-knaves", "logic", "kk_logic_hard"):
         s = compute_kk(solution_str, ground_truth)
         return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
-    if ds in ("sciq", "science"):
+    if ds in ("sciq", "science", "gpqa", "gpqa_diamond", "gpqa_main"):
+        # GPQA uses the same A/B/C/D letter format as SciQ, so compute_sciq reuses cleanly.
         s = compute_sciq(solution_str, ground_truth)
         return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
     # math (and anything else) -> verl's built-in dispatcher (math_dapo returns a dict)
