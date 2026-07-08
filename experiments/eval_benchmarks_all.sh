@@ -45,7 +45,13 @@ BENCHMARKS=(
   "$BENCH_ROOT/math/aime24.parquet"
   "$BENCH_ROOT/math/aime25.parquet"
   "$BENCH_ROOT/science/gpqa_diamond.parquet"
+  "$BENCH_ROOT/science/gpqa_main_minus_diamond.parquet"
+  "$BENCH_ROOT/science/mmlu_pro_physics.parquet"
+  "$BENCH_ROOT/science/mmlu_pro_chemistry.parquet"
   "$BENCH_ROOT/logic/kk_hard.parquet"
+  "$BENCH_ROOT/logic/bbh_logical_deduction.parquet"
+  "$BENCH_ROOT/logic/bbh_tracking.parquet"
+  "$BENCH_ROOT/logic/zebra_logic_mc.parquet"
 )
 
 # Enumerate ckpts to eval

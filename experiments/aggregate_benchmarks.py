@@ -13,9 +13,12 @@ from pathlib import Path
 
 
 BENCHMARK_ORDER = [
+    # math (easy -> hard)
     "gsm8k", "math_500", "minerva_math", "olympiadbench", "amc23", "aime24", "aime25",
-    "gpqa_diamond",
-    "kk_hard",
+    # science
+    "gpqa_diamond", "gpqa_main_minus_diamond", "mmlu_pro_physics", "mmlu_pro_chemistry",
+    # logic
+    "kk_hard", "bbh_logical_deduction", "bbh_tracking", "zebra_logic_mc",
 ]
 
 

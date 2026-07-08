@@ -55,28 +55,37 @@ def compute_kk(solution_str: str, ground_truth: str) -> float:
     return 1.0
 
 
-# ----------------------------- science: SciQ (multiple choice) ----------------------
-# We format SciQ as a 4-option MCQ (A-D). Ground truth is the correct option letter.
-# Student answer: extract the chosen letter (last "A/B/C/D" near an answer marker).
-_LETTER_RE = re.compile(r"\b([ABCD])\b")
+# ----------------------------- science: SciQ / GPQA / MMLU-Pro (MCQ letter) -----------------
+# We format SciQ/GPQA as 4-option MCQ (A-D), MMLU-Pro as 10-option (A-J).
+# Ground truth is the correct option letter.
+# Student answer: extract the chosen letter near an answer marker.
+_LETTER_RE = re.compile(r"\b([A-J])\b")
 
 
-def compute_sciq(solution_str: str, ground_truth: str) -> float:
+def compute_mcq_letter(solution_str: str, ground_truth: str, letters: str = "ABCD") -> float:
     gt = (ground_truth or "").strip().upper()[:1]
-    if gt not in "ABCD":
+    if gt not in letters:
         return 0.0
     ans = solution_str or ""
-    for marker in ("final answer", "answer:", "the answer is", "correct option"):
+    for marker in ("final answer", "answer is:", "answer:", "the answer is", "correct option"):
         idx = ans.lower().rfind(marker)
         if idx != -1:
             ans = ans[idx:]
             break
-    letters = _LETTER_RE.findall(ans)
-    if not letters:
-        letters = _LETTER_RE.findall(solution_str or "")
-    if not letters:
+    letters_found = re.findall(rf"\b([{letters}])\b", ans)
+    if not letters_found:
+        letters_found = re.findall(rf"\b([{letters}])\b", solution_str or "")
+    if not letters_found:
         return 0.0
-    return 1.0 if letters[-1] == gt else 0.0
+    return 1.0 if letters_found[-1] == gt else 0.0
+
+
+def compute_sciq(solution_str: str, ground_truth: str) -> float:
+    return compute_mcq_letter(solution_str, ground_truth, "ABCD")
+
+
+def compute_mmlu_pro(solution_str: str, ground_truth: str) -> float:
+    return compute_mcq_letter(solution_str, ground_truth, "ABCDEFGHIJ")
 
 
 # ----------------------------- dispatcher -----------------------------
@@ -95,6 +104,15 @@ def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kw
     if ds in ("sciq", "science", "gpqa", "gpqa_diamond", "gpqa_main"):
         # GPQA uses the same A/B/C/D letter format as SciQ, so compute_sciq reuses cleanly.
         s = compute_sciq(solution_str, ground_truth)
+        return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
+    if ds.startswith("mmlu_pro"):
+        # MMLU-Pro has 10 options A-J
+        s = compute_mmlu_pro(solution_str, ground_truth)
+        return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
+    if ds in ("bbh_logical_deduction", "bbh_tracking", "zebra_logic_mc"):
+        # BBH MCQ subtasks + ZebraLogic MC use letter answers (up to 7-choice for BBH,
+        # up to 6-choice for zebra) — treat as A-J range.
+        s = compute_mmlu_pro(solution_str, ground_truth)
         return {"score": s, "acc": bool(s >= 1.0), "pred": ""}
     # math (and anything else) -> verl's built-in dispatcher (math_dapo returns a dict)
     from verl.utils.reward_score import default_compute_score
