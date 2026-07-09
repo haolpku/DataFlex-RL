@@ -22,7 +22,7 @@ import random
 
 import pandas as pd
 
-MATH_INSTR = 'Let\'s think step by step. Remember to put your answer on its own line after "Answer:".'
+MATH_INSTR = "Let's think step by step and output the final answer within \\boxed{}."
 KK_INSTR = ("Reason step by step, then state your final answer as a list like "
             "'X is a knight/knave' for every person.")
 SCIQ_INSTR = "Reason step by step, then give the final answer as a single letter (A, B, C, or D)."
@@ -63,9 +63,11 @@ def build_math(root, n, split, rng):
             q = f"{q}\n\n{MATH_INSTR}"
             gt = r["reward_model"]["ground_truth"]
             ds = r["data_source"]
-            # all math routes to verl's `math_dapo` (Answer: <val> boxed-answer verifier),
-            # matching the proven dapo_math setup; keep orig source in extra_info.
-            rows.append(make_row("math_dapo", q, gt, "math", "math",
+            # Route to verl's `math_reward` verifier by using data_source='HuggingFaceH4/MATH-500'
+            # (verl __init__.py maps lighteval/MATH-500 IDs -> math_reward, which is latex2sympy-
+            # based, accepts \boxed{X}, and matches Qwen2.5-Math benchmark verifiers).
+            # OLD (bug fixed 2026-07-09): 'math_dapo' + Answer: instruction — mismatched benchmarks.
+            rows.append(make_row("HuggingFaceH4/MATH-500", q, gt, "math", "math",
                                   {"orig_source": str(ds)}))
     return rows
 
