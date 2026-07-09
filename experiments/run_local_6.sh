@@ -6,7 +6,7 @@ set -uo pipefail
 ROOT=/apdcephfs_zwfy14/share_304380933/aldenliang
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGDIR=$ROOT/df_logs_local; mkdir -p "$LOGDIR"
-CKPT_ROOT=$ROOT/df_ckpts_05b_seeds
+CKPT_ROOT=$ROOT/campaign_v2_local/05b
 DF="trainer.v1.trainer_mode=dataflex_sync"
 declare -A RUN
 RUN[baseline]=""
