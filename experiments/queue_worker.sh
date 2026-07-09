@@ -17,7 +17,7 @@ HOST=$(hostname)-$$
 
 # per-scale driver + ckpt root
 driver_for(){ case "$1" in 7b) echo "$ROOT/DataFlex-RL/experiments/train_one_7b_jizhi.sh";; 05b) echo "$ROOT/DataFlex-RL/experiments/train_one_05b_jizhi.sh";; *) echo "";; esac; }
-ckproot_for(){ case "$1" in 7b) echo "$ROOT/df_ckpts_7b_seeds";; 05b) echo "$ROOT/df_ckpts_05b_seeds";; *) echo "";; esac; }
+ckproot_for(){ case "$1" in 7b) echo "$ROOT/campaign_v2/7b";; 05b) echo "$ROOT/campaign_v2/05b";; *) echo "";; esac; }
 
 log(){ echo "[$(date +%H:%M:%S)][$HOST] $*"; }
 log "worker up. jobs=$JOBS"

@@ -12,7 +12,7 @@ HOST=$(hostname)-$$
 
 driver="$ROOT/DataFlex-RL/experiments/train_one_mix_jizhi.sh"
 model_for(){ case "$1" in 7b) echo "$ROOT/models/Qwen2.5-7B-Instruct";; 05b) echo "$ROOT/models/Qwen2.5-0.5B-Instruct";; *) echo "";; esac; }
-ckproot_for(){ case "$1" in 7b) echo "$ROOT/campaign_v1/mix_7b";; 05b) echo "$ROOT/campaign_v1/mix_05b";; *) echo "";; esac; }
+ckproot_for(){ case "$1" in 7b) echo "$ROOT/campaign_v2/mix_7b";; 05b) echo "$ROOT/campaign_v2/mix_05b";; *) echo "";; esac; }
 
 log(){ echo "[$(date +%H:%M:%S)][$HOST] $*"; }
 log "mixer worker up. jobs=$JOBS"
