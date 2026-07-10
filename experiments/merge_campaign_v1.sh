@@ -16,12 +16,13 @@ export PYTHONUNBUFFERED=1
 
 SCALE="${SCALE:-both}"
 MIX="${MIX:-0}"
+CAMPAIGN="${CAMPAIGN:-v1}"   # 'v1' or 'v2' -> campaign_v1/ or campaign_v2/
 [ "$SCALE" = "both" ] && SCALES="7b 05b" || SCALES="$SCALE"
 [ "$MIX" = "1" ] && SUBDIR_PREFIX="mix_" || SUBDIR_PREFIX=""
 
 cd "$ROOT/frameworks/verl"
 for sc in $SCALES; do
-  CKPT="$ROOT/campaign_v1/${SUBDIR_PREFIX}${sc}"
+  CKPT="$ROOT/campaign_${CAMPAIGN}/${SUBDIR_PREFIX}${sc}"
   if [ -n "${RUNS:-}" ]; then RUN_LIST="$RUNS"; else RUN_LIST=$(ls "$CKPT" 2>/dev/null); fi
   for run in $RUN_LIST; do
     ACTOR="$CKPT/$run/$STEP/actor"
