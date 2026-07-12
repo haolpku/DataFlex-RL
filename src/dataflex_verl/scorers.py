@@ -169,6 +169,10 @@ def _teacher_logp(batch):
     """Fetch the teacher per-token logprob at the sampled token -> (bs, L).
 
     Accepts (bs, L) or (bs, L, K); takes column 0 of the last axis when 3-D.
+    Aligns to the response segment length: if teacher width exceeds student
+    ``old_log_probs`` width (verl may pad teacher to prompt+response), slice
+    the trailing ``response_len`` columns.
+
     Raises a clear error (naming the OPD switch) if the field is absent.
     """
     b = batch.batch
@@ -177,6 +181,16 @@ def _teacher_logp(batch):
             t = b[k]
             if t.dim() == 3:
                 t = t[..., 0]
+            # Align to response length: teacher may be prompt+response wide.
+            if "response_mask" in b:
+                resp_len = b["response_mask"].shape[-1]
+                if t.shape[-1] != resp_len:
+                    if t.shape[-1] > resp_len:
+                        t = t[..., -resp_len:]
+                    else:
+                        # rare: pad right with zeros
+                        pad = resp_len - t.shape[-1]
+                        t = torch.nn.functional.pad(t, (0, pad))
             return t
     raise KeyError(
         f"none of {_TEACHER_KEYS} found in batch (have {list(b.keys())}); "
