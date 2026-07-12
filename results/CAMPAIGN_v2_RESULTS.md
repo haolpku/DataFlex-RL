@@ -138,16 +138,74 @@ Both are select-difficulty. `difffilter` keeps solvable-but-not-trivial samples 
 - Mixer round: 24 additional runs (4 mixers x 2 scales x 3 seeds), 10/24 done as of writing. Appended below when complete.
 - LaTeX table export from `results/campaign_v2_eval_summary.csv`.
 
-## 8. Reproducibility
+## 8. Mixer round results
+
+See separate file [`CAMPAIGN_v2_MIXER_RESULTS.md`](CAMPAIGN_v2_MIXER_RESULTS.md). Summary:
+
+- **7B mixers land in 46.8–49.0 range** (0.4 pt spread among static/tscl/dump_ucb, reward_gap partial). Static baseline (fixed 1/3) is competitive with all dynamic mixers.
+- **0.5B: reward_gap edges static +0.4 avg**, consistent with main-round difffilter finding that weak models benefit from active steering.
+- **Design-space framing supported**: cross-scorer variance > cross-actuator variance > cross-mixer variance.
+- All 13 methods (9 main + 4 mixer) at 7B land within 2.2 pt of each other; at 0.5B within 3.9 pt (excluding aime24 outliers).
+
+## 9. Future work / compute budget
+
+**What we have**: 78 runs (54 main + 24 mixer) × 6 benchmarks on Qwen2.5-{0.5B, 7B}, 300 steps, 3-domain (math+logic+science). Total ~200 GPU-days.
+
+**What would strengthen the paper** (ranked by return on compute):
+
+### Option A: Cross-family generalization (Llama)
+- **Purpose**: show findings hold beyond Qwen. Reviewers will ask this.
+- **Minimum**: Llama-3.2-{1B, 3B} × 3 methods (baseline, difffilter, maxvar) × 3 seeds × 3 domains = **18 runs**.
+- **Compute**: ~2h/run × 18 = **36 H100-hours** on 8 GPUs.
+- **Value**: high — this is the highest-value ask reviewers will make.
+- **Risk**: Llama's chat template + boxed-math alignment may need re-tuning (v1 was burned by this). Budget 20% overhead → **~45 hours effective**.
+
+### Option B: Longer training (600 or 1000 steps)
+- **Purpose**: test whether 7B "flat" result is a saturation artifact of 300 steps.
+- **Minimum**: 3 methods × 3 seeds × 1000 steps at 7B = **9 runs × ~7h = 63 H100-hours**.
+- **Value**: medium — if methods diverge at 1000 steps, story changes. If they stay flat, it's a stronger negative result.
+- **Risk**: 7B GRPO at 1000 steps may show reward hacking; needs monitoring.
+
+### Option C: Harder training data
+- **Purpose**: get out of the "base model already solves it" regime.
+- **Approach**: replace math_dapo + gsm8k with MATH-hard-only or AIME-style problems.
+- **Minimum**: 3 methods × 3 seeds × 1 scale (7B) = **9 runs × ~2h = 18 H100-hours**.
+- **Value**: high but subject to novelty concerns (many recent papers use math-hard).
+- **Prerequisite**: identify a training set where baseline scores 30-50% (currently 76% on 300-step MATH). Building this is ~1 person-day.
+
+### Option D: Larger models (14B / 32B)
+- **Purpose**: test scaling hypothesis (does data-processing help at bigger scale?).
+- **Minimum**: Qwen2.5-14B × 3 methods × 3 seeds = 9 runs × ~5h × 2 = **90 H100-hours** (need 2x GPU per run due to memory).
+- **Value**: medium — but if flat holds at 14B, the negative-result becomes very strong. If breaks, story shifts to "data-processing matters only at scale."
+- **Risk**: highest compute cost per finding.
+
+### Option E: Deeper domain mixture
+- **Purpose**: fix the mixer round's weak signal.
+- **Approach**: 8–10 domains instead of 3 (add code, medical, common-sense, etc).
+- **Minimum**: 4 mixers × 3 seeds × 1 scale (7B) × 10 domains = **12 runs × ~2h = 24 H100-hours** — but data prep is ~1 week.
+- **Value**: high — this is where dynamic mixture *should* win.
+
+### Recommended minimum for a top-tier ML venue (NeurIPS / ICML):
+- **Options A + C** (Llama + harder data) = **~65 hours + 1 person-week** for data prep.
+- Rationale: reviewers will demand cross-family + a regime where baseline is beatable. If both give consistent story with what we have, paper is defensible.
+
+### Recommended minimum for a workshop (ICLR-workshop, ACL-workshop tier):
+- **Nothing more needed** — current 78-run Qwen results with the "design-space" framing is publishable as-is at a workshop with limitations section noting Llama + harder-data as future work.
+
+### If leaving the project (transition-friendly):
+- Just publish current 78 rows as a benchmark study, framed as "we tested 13 methods and none clear the noise floor at 7B; here's what does at 0.5B." Emphasize the *methodology contribution* (Scorer×Actuator taxonomy, aligned pipeline, seed-noise analysis).
+- Do NOT start Options A–E without a committed successor — half-finished experiments create data burden without benefit.
+
+## 10. Reproducibility
 
 - Training driver: `experiments/train_one_{7b,05b}_jizhi.sh`, `experiments/train_one_mix_jizhi.sh`
 - Queue system: `experiments/queue_worker.sh` (main), `experiments/queue_worker_mix.sh` (mixer); jobs in `queue/jobs.txt` and `queue/jobs_mix.txt`
 - Job generator: `experiments/gen_jobs.sh`, `experiments/gen_jobs_mix.sh`
 - Eval scripts (outside repo, in `STEER/scripts/eval/`): `eval_math.sh` (Qwen2.5-Math harness), `eval_oc.sh` + `oc_configs/eval_gpqa_dataflex.py` (opencompass)
-- Aggregation: `STEER/scripts/eval/aggregate_v2.py`, `method_summary.py`
+- Aggregation: `STEER/scripts/eval/aggregate_v2.py`, `method_summary.py`, `mixer_summary.py`
 - Full per-ckpt raw numbers: `results/campaign_v2_eval_summary.csv`
 
-## 9. Data
+## 11. Data
 
 Full per-seed table in `results/campaign_v2_eval_summary.csv`. Schema:
 `scale, name, seed, math, aime24, olympiadbench, minerva_math, gsm8k, gpqa`
