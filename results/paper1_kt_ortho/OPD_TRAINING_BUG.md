@@ -1,68 +1,109 @@
 # OPD Joint Training: Ray Teacher-Pool Spawn Hang
 
-**Date**: 2026-07-13.  
-**Status**: Blocked. Escalated to future-work.
+**Date last updated**: 2026-07-13.  
+**Status**: Root cause **narrowed down**, quick fix not obvious.
 
 ## Symptom
 
-When launching a GRPO+OPD joint training run (student on 1 GPU, teacher pool on 2 GPUs, both Qwen-0.5B-Instruct), the training silently hangs at:
+GRPO+OPD training silently hangs at the same point every time:
+- Log stops after `[TaskRunnerV1] reward loop manager initialized`.
+- Only the student model loads (GPU 0 ~ 4.7 GB); the teacher pool never starts up.
+- No error message. No progress. Waits forever.
+- Reproducible across:
+  - `multidomain_3` corpus **or** `dapo_math` corpus (dataset-independent);
+  - `custom_reward_function` on **or** off;
+  - 4 GPUs, 8 GPUs, 2 GPUs (resource-independent);
+  - Fresh Ray state (`rm -rf /tmp/ray*`), fresh session, no preceding baseline runs.
+- **Yet**: the same config succeeded on 2026-07-12, running through step 2 with `dataflex/weight_std=0.83`.
 
+## Root cause: probable
+
+Between the successful smoke on 2026-07-12 and the hangs on 2026-07-13, the trainer code path that instantiates the teacher pool has a **nested-asyncio conflict**:
+
+- `TrainerBase._setup()` at `verl/trainer/ppo/v1/trainer_base.py:262` calls `MultiTeacherModelManager(...)` **directly**.
+- `MultiTeacherModelManager.__init__` calls `_initialize_teacher_model_managers` → `_run_all(...)` which uses `asyncio.gather` under `@auto_await`.
+- The `@auto_await` decorator falls back to `asyncio.run(...)` when no loop is running.
+- The `fully_async_rollouter.py` code path around line 625 has an **explicit comment**:
+  > "MultiTeacherModelManager.__init__ calls _run_all internally which uses asyncio.run(), conflicting with the already-running event loop. Run in a thread executor."
+- The v1 trainer's `_setup()` is called inside a Ray actor method, which in vllm v1 mode runs with an active event loop → nested-asyncio → deadlock.
+
+So the current code path only works in **sync-only** contexts (where no event loop is running at `_setup()` time). This may have been the case on 2026-07-12 (something in the environment activated a sync-only path), and something changed to trigger the async-context deadlock today.
+
+## Confirmed by debug logging
+
+With `RAY_LOG_TO_STDERR=1 RAY_BACKEND_LOG_LEVEL=debug`:
+- GCS server starts fine.
+- Actor placement group is scheduled for the student.
+- After that, **no more placement groups are scheduled** — the teacher placement group request never fires from `MultiTeacherModelManager._initialize_llm_servers`.
+- Consistent with the code deadlocking inside `_run_all(...)` in a nested-asyncio loop.
+
+## Attempts that did not work
+
+| # | Attempt | Result |
+|---|---|---|
+| 1 | Full pkill + `/tmp/ray*` + `/dev/shm/ray*` clean | Same hang |
+| 2 | Reduce 8 → 4 GPUs (CUDA_VISIBLE_DEVICES=0,1,2,3) | Same hang |
+| 3 | Reduce to 2 GPUs (student 1 + teacher 1) | Same hang |
+| 4 | Cold-start opd_s1 (no preceding baseline runs) | Same hang |
+| 5 | EXACT smoke config from 2026-07-12 (dapo_math, no custom_reward) | Same hang |
+| 6 | Apply M1 shape fix for teacher_logprobs | Applies but doesn't affect init hang |
+| 7 | Wait 14+ hours per attempt for a slow init | No recovery |
+
+## Recommended fixes (in order of estimated cost)
+
+### 1. Use `fully_async_rollouter` path (~1-2 h for someone who knows verl)
+
+The comment in `fully_async_rollouter.py:625` explicitly says the correct pattern is to call `MultiTeacherModelManager.__init__` in a **thread executor**, not directly. The fix is to wrap the `MultiTeacherModelManager(...)` call at `trainer_base.py:262` similarly. Concretely, change:
+
+```python
+# trainer_base.py, around line 262:
+self.teacher_model_manager = MultiTeacherModelManager(
+    config=self.config,
+    resource_pool=teacher_resource_pool,
+)
 ```
-[TaskRunnerV1] INFO: actor and ref model engine initialized
-[TaskRunnerV1] INFO: reward loop manager initialized
-[WorkerDict] After FSDP, memory allocated: 5.23/95.00 GB
-[Gloo] Rank 0 is connected to 0 peer ranks. Expected: 0
+
+to:
+
+```python
+import concurrent.futures
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    fut = pool.submit(
+        MultiTeacherModelManager,
+        config=self.config,
+        resource_pool=teacher_resource_pool,
+    )
+    self.teacher_model_manager = fut.result()
 ```
 
-… and then nothing. No vLLM API server start line. No progress. GPU memory footprint stays under 5 GB (student only, teacher pool never loaded). No error message. Ray dashboard shows `TaskRunnerV1` alive but idle.
+This avoids the nested-asyncio conflict.
 
-## What we know
+### 2. Downgrade Ray to a version known-tested by verl (~1 h)
 
-- **The smoke test passed on 2026-07-12** with essentially the same configuration (student==teacher, both 0.5B, 4 GPUs, `distillation.n_gpus_per_node=2`). Reached step 2. `dataflex/weight_std=0.83`.
-- **The same config fails on 2026-07-13** after ~14 h of the same session running (or fresh restarts). Every attempt hangs at the same spot.
-- **Fresh Ray state clean does NOT help**: `pkill -9 -f 'ray|gcs|main_ppo|vllm'` + `rm -rf /tmp/ray*` + `rm -rf /dev/shm/ray*` between attempts — still hangs.
-- **Reducing to 4 GPUs (CUDA_VISIBLE_DEVICES=0,1,2,3)** does not help.
-- **Fresh clean slate before opd_s1** (no preceding baseline runs) still hangs.
+The verl OPD reference example uses Ray 2.44. We're on Ray 2.46. Some Ray versions behave differently around asyncio ↔ Ray actor interop. Try `pip install ray==2.44.0`.
 
-## Hypotheses (ordered by likelihood)
+### 3. Downgrade vLLM to v0 API (revert VLLM_USE_V1=1) (~30 min)
 
-1. **verl OPD's async agent loop deadlocks after `reward loop manager initialized`** on our specific Ray version. Not reproducible on the reference machine where smoke passed. May be a race between `TransferQueueController` and the teacher `AgentLoopWorker`.
-2. **vLLM v1 API server / Ray placement group interaction**: teacher's `vLLMHttpServer` tries to grab GPU that's already promised to student's placement group, holding forever.
-3. **CUDA shared-memory leak** across previous runs. Ray placement group can't book the resource. `nvidia-smi` shows 0 MiB free on non-student GPUs after clean, but no processes hold them — suggests kernel-level orphan.
-4. **`distillation.enabled=true` config subtly differs from smoke**. Diffs checked: identical.
+vLLM v1's async engine adds an event loop layer. Reverting to v0 (`export VLLM_USE_V1=0`) removes it and may make sync-only trainer code work.
 
-## What we tried
+### 4. Use `main_ppo_v0.py` entry point (~15 min try)
 
-| Attempt | Result |
-|---|---|
-| Full pkill + `/tmp/ray*` clean between runs | Same hang |
-| Reduce GPUs 8 → 4 | Same hang |
-| Cold-start opd_s1 (no preceding baseline) | Same hang |
-| Fix `_teacher_logp` shape (M1 bugfix from 2026-07-12) | Applies but doesn't affect init hang |
-| Wait 14+ hours per attempt | No recovery |
-
-## Options for future work
-
-1. **Bisect the difference between the 2026-07-12 smoke run and now**: what changed? Ray version, vllm version, GPU driver, transformers version? Diff the environment. Most concrete lead.
-2. **Try a different Ray version**: pin ray=2.44 or 2.50 (we're on 2.56). Some verl users report better OPD stability on 2.44.
-3. **Use verl's `AsyncActorRolloutRefWorker`** instead of the default sync worker. Distillation was primarily developed for async; sync mode may have less-tested paths.
-4. **Switch to a manual teacher-inference implementation**: skip verl's teacher pool. Run a standalone vLLM server for the teacher, hit its API from a custom scorer inside DataFlex. Higher engineering cost but avoids Ray placement group.
-5. **Abandon joint RL+OPD** and use Paper 1's **offline orthogonality result** (Section `paper1_kt_ortho/README.md`) as the sole empirical evidence. Frame Paper 1 as "we propose the signal + prove orthogonality + rescue-ablation; joint training benchmark is future work due to infrastructure bugs".
-
-We chose option 5 for the current milestone because Option B alone establishes the paper's core novelty (k_t ⊥ |advantage|) and running out of Alden's remaining time.
+verl still ships the older `main_ppo_v0.py` entry which has a different distillation setup. Change `python -m verl.trainer.main_ppo` to `python -m verl.trainer.main_ppo_v0` and see if that path works. **Fastest thing to try first.**
 
 ## Environment snapshot
 
 ```
 verl               editable @ /apdcephfs_zwfy14/share_304380933/qifengcai/old/frameworks/verl
-dataflex_verl      editable @ /apdcephfs_zwfy14/share_304380933/qifengcai/old/DataFlex-RL-opd  (feat/opd-fusion)
+dataflex_verl      editable @ /apdcephfs_zwfy14/share_304380933/qifengcai/old/DataFlex-RL-opd (feat/opd-fusion)
 torch              2.7.1
-ray                2.56.0
-vllm               (v1, VLLM_USE_V1=1)
-Qwen2.5-0.5B-Instruct  (student + teacher for self-teacher smoke)
+ray                2.46.0
+vllm               0.10.2 (v1 mode: VLLM_USE_V1=1)
+Qwen2.5-0.5B-Instruct  (student + teacher)
 CUDA               12.9
 ```
 
 ## For the successor
 
-The MOST valuable thing to try first is option 1 (env bisect). If Ray/vllm version is pinned matching what verl OPD's authors tested, this likely works. Reference: verl `examples/on_policy_distillation_trainer/run_qwen3_0.6b_opd_veomni.sh` and its environment. If pinning env fixes it, then the 9 remaining runs (opd_s2/s3, opd_kt_select_{1,2,3}, opd_kt_reweight_{1,2,3}) can be run to complete Paper 1's MVE.
+**First thing to try**: fix #4 (main_ppo_v0 entry). If that works, the 9 remaining OPD runs (`opd_{s1,s2,s3}`, `opd_kt_select_{s1,s2,s3}`, `opd_kt_reweight_{s1,s2,s3}`) can be completed in ~20 h wall-clock.
+
+**Fallback**: Paper 1 stands on the current Option B evidence (see `results/paper1_kt_ortho/README.md`). k_t orthogonality is empirically established (mean r = +0.04 with 0.5B teacher, mean r = −0.05 with 7B teacher). Full RL+OPD scheduling benchmark is legitimate future work.
