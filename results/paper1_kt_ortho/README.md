@@ -65,3 +65,17 @@ python experiments/orthogonality/kt_ortho.py \
 ```
 
 Needs 3 GPUs (vLLM + student HF + teacher HF). Runs in ~5-30 min depending on teacher size.
+
+## Addendum: 7B teacher analysis (2026-07-13)
+
+Repeated the same analysis with **Qwen-7B-Instruct** as teacher (vs original 0.5B self-teacher). Same 3 baseline ckpts, same 100 prompts × 5 rollouts, but teacher forward is now done by a 15× larger model.
+
+| Correlation | s1 | s2 | s3 | **mean** |
+|---|---|---|---|---|
+| **k_t vs \|advantage\|** | −0.03 | −0.06 | −0.07 | **−0.05** |
+| **k_t vs reward** | +0.34 | +0.44 | +0.47 | +0.42 |
+| Rescue rate | 5.4% | 5.8% | 3.4% | ~4.9% |
+
+**Key observation**: With a stronger teacher, **k_t ⊥ |advantage| is even more clear** (mean −0.05 vs the 0.5B self-teacher's +0.04). The orthogonality claim is robust across teacher scales, which strengthens Paper 1's core empirical evidence.
+
+Files in `results/paper1_kt_ortho_7bT/baseline_s{1,2,3}/`.

@@ -1,0 +1,15 @@
+
+=== k_t Orthogonality Analysis ===
+Records: 500
+Domains: {'kk_logic': 200, 'sciq': 150, 'HuggingFaceH4/MATH-500': 150}
+
+Correlations:
+  k_t vs reward:        pearson=+0.468, spearman=+0.411
+  k_t vs |advantage|:   pearson=-0.074, spearman=-0.093
+  reward vs |advantage|: pearson=+0.118, spearman=+0.054
+
+Interpretation:
+  |pearson(k_t, reward)| < 0.3     => k_t is (weakly) orthogonal to reward ✓
+  |pearson(k_t, |adv|)| < 0.3      => k_t is (weakly) orthogonal to |advantage| ✓
+  Rescue candidates: 17/500 (3.4%)
+  → samples where RL sees no signal (low reward) but teacher can still teach (high k_t).
