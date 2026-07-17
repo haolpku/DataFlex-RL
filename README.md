@@ -105,6 +105,50 @@ Subclass the relevant base and register it — see any file in `src/dataflex_ver
 A new scorer only needs `requires` / `timing` / `granularity` / `needs_groups` +
 a `score()` method. Because scoring is shared, one scorer feeds all three mechanisms.
 
+## Reproducing the paper evaluation
+
+Every released checkpoint is evaluated on three domains (math, logic, science) at
+`temperature=0`, `apply_chat_template`, seed 0, averaged over 3 training seeds.
+
+**1. Merge** the FSDP checkpoint to HuggingFace format (required before eval):
+
+```bash
+python -m verl.model_merger merge --backend fsdp \
+  --local_dir  <ckpt>/global_step_300/actor \
+  --target_dir <ckpt>/global_step_300/actor/huggingface
+```
+
+**2. Evaluate.** Math uses the official Qwen2.5-Math harness (latex2sympy grader,
+`qwen25-math-cot`, `max_tokens=8192`): MATH-500, AIME24, OlympiadBench, Minerva, GSM8K.
+Logic and science are verl-schema parquets under `benchmarks/{logic,science}/`, scored
+by `dataflex_verl.rewards.multidomain_reward.compute_score` (K&K exact-match; MCQ
+letter-match), `max_tokens=4096`:
+
+```bash
+# logic (kk_hard, bbh_logical_deduction, bbh_tracking, zebra_logic_mc)
+# science (mmlu_pro_chemistry, mmlu_pro_physics, gpqa_diamond)
+python experiments/eval_benchmark.py \
+  --model <ckpt>/.../huggingface \
+  --benchmark benchmarks/logic/kk_hard.parquet \
+  --out results/<exp>/kk_hard.json
+# or amortize model load across all benchmarks:
+bash experiments/eval_benchmarks_all.sh          # 8 GPUs = 8× TP=1 data-parallel
+```
+
+> **Parallelism note.** Use 8× TP=1 (one checkpoint per GPU), *not* tensor-parallel=8:
+> Qwen-7B has 28 attention heads (legal TP ∈ {1,2,4,7,14,28}). For TP>1, set
+> `NCCL_IB_DISABLE=1 NCCL_P2P_DISABLE=1 NCCL_CUMEM_HOST_ENABLE=0`.
+
+**3. Aggregate** per-seed benchmark scores into the domain tables (mean over seeds per
+benchmark, then over benchmarks per domain):
+
+```bash
+python experiments/aggregate_benchmarks.py     # -> results/*.csv
+```
+
+GPQA-Diamond is reported as a secondary "hard ceiling" metric only: at ≤7B it sits near
+the 4-choice random baseline, so MMLU-Pro is the primary science discriminator.
+
 ## Testing
 
 ```bash
