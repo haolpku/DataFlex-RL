@@ -19,3 +19,9 @@ outputs/
 # envs
 .venv/
 venv/
+
+# Paper-specific content (lives in DataFlex-RL-Anonymous)
+experiments/
+results/
+analysis/
+research/
