@@ -16,18 +16,40 @@ from .core.registry import register_mixer
 
 
 class DomainStatsTracker:
-    """Sliding-window mean of a per-domain scalar signal (e.g. mean reward)."""
+    """Sliding-window per-domain statistics for the curriculum mixers.
+
+    Tracks three signals per domain, because the mixers key on different axes:
+      * windowed reward         -> reward level (reward_gap) and slope (tscl)
+      * windowed mean |advantage| -> learnability (dump_ucb)
+      * cumulative sample count -> UCB exploration bonus (dump_ucb)
+
+    Previously only reward was tracked and every mixer was fed ``mean reward``,
+    which silently collapsed dump_ucb and tscl into ``softmax(mean_reward)``.
+    """
 
     def __init__(self, window: int = 50):
         self.window = window
-        self._buf = defaultdict(lambda: deque(maxlen=window))
+        self._buf = defaultdict(lambda: deque(maxlen=window))   # reward series
+        self._adv = defaultdict(lambda: deque(maxlen=window))   # mean |advantage| series
+        self._count = defaultdict(int)                          # cumulative sample count
 
-    def update(self, domain: str, value: float) -> None:
+    def update(self, domain: str, value: float, abs_adv=None) -> None:
+        """Record one domain observation: reward ``value`` (+ optional mean |A|)."""
         self._buf[domain].append(float(value))
+        self._count[domain] += 1
+        if abs_adv is not None:
+            self._adv[domain].append(float(abs_adv))
 
     def mean(self, domain: str, default: float = 0.0) -> float:
         b = self._buf[domain]
         return sum(b) / len(b) if b else default
+
+    def mean_abs_adv(self, domain: str, default: float = 0.0) -> float:
+        b = self._adv[domain]
+        return sum(b) / len(b) if b else default
+
+    def count(self, domain: str) -> int:
+        return int(self._count[domain])
 
     def slope(self, domain: str, default: float = 0.0) -> float:
         """Least-squares slope of the windowed reward series (TSCL learning progress).
@@ -60,6 +82,9 @@ class RewardGapMixer(Mixer):
     idea using RL reward.
     """
 
+    signal = "reward"       # consumes {domain -> mean reward}
+    needs_counts = False
+
     def __init__(self, domains, temperature: float = 1.0, floor: float = 0.05, **kwargs):
         super().__init__(**kwargs)
         self.domains = list(domains)
@@ -83,6 +108,9 @@ class RewardGapMixer(Mixer):
 @register_mixer("static")
 class StaticMixer(Mixer):
     """Fixed proportions (baseline / warmup fallback)."""
+
+    signal = "static"       # consumes no runtime statistic
+    needs_counts = False
 
     def __init__(self, domains, proportions=None, **kwargs):
         super().__init__(**kwargs)
@@ -109,6 +137,9 @@ class DumpUCBMixer(Mixer):
     ``scores`` is a dict {domain -> mean |advantage|}; visit counts come from ``ctx``
     (the trainer passes cumulative per-domain sample counts).
     """
+
+    signal = "abs_adv"      # consumes {domain -> mean |advantage|}
+    needs_counts = True     # + cumulative per-domain sample counts for the UCB bonus
 
     def __init__(self, domains, temperature: float = 1.0, c: float = 1.0, floor: float = 0.05, **kwargs):
         super().__init__(**kwargs)
@@ -145,6 +176,9 @@ class TSCLMixer(Mixer):
     DomainStatsTracker.slope). softmax(|slope|/T) with a floor.
     """
 
+    signal = "slope"        # consumes {domain -> reward slope}
+    needs_counts = False
+
     def __init__(self, domains, temperature: float = 1.0, floor: float = 0.05,
                  signed: bool = False, **kwargs):
         super().__init__(**kwargs)
@@ -162,3 +196,41 @@ class TSCLMixer(Mixer):
         p = p / p.sum()
         p = np.maximum(p, self.floor)
         return p / p.sum()
+
+
+def mixer_inputs(mixer, tracker, domains):
+    """Build the (stats, kwargs) a mixer's ``act`` needs from a DomainStatsTracker.
+
+    Dispatches on the mixer's declared ``signal`` so each curriculum method is
+    fed the statistic it is defined on — reward level (reward_gap), mean
+    |advantage| (dump_ucb), or reward slope (tscl) — rather than one shared
+    mean-reward dict. dump_ucb additionally receives cumulative per-domain
+    counts for its UCB exploration bonus. Raises on an unknown / unset signal
+    instead of silently falling back (which is what collapsed dump_ucb and tscl
+    into the same softmax(mean_reward) map).
+
+    Returns ``(stats, kwargs)`` where ``stats`` is the dict passed positionally
+    to ``mixer.act`` and ``kwargs`` carries extras such as ``counts``.
+    """
+    signal = getattr(mixer, "signal", None)
+    if not signal:
+        raise ValueError(
+            f"mixer {type(mixer).__name__} declares no `signal`; cannot decide "
+            "which per-domain statistic to feed it"
+        )
+    if signal == "static":
+        return {}, {}
+    if signal == "reward":
+        stats = {d: tracker.mean(d) for d in domains}
+    elif signal == "abs_adv":
+        stats = {d: tracker.mean_abs_adv(d) for d in domains}
+    elif signal == "slope":
+        stats = {d: tracker.slope(d) for d in domains}
+    else:
+        raise ValueError(
+            f"mixer {type(mixer).__name__} declares unknown signal {signal!r}"
+        )
+    kwargs = {}
+    if getattr(mixer, "needs_counts", False):
+        kwargs["counts"] = {d: tracker.count(d) for d in domains}
+    return stats, kwargs

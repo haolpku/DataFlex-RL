@@ -42,7 +42,7 @@ from verl.utils import tensordict_utils as tu  # noqa: E402
 from verl.workers.utils.padding import response_to_nested  # noqa: E402
 
 from .build import build_from_config  # noqa: E402
-from .mixers import DomainStatsTracker  # noqa: E402
+from .mixers import DomainStatsTracker, mixer_inputs  # noqa: E402
 from . import replay_buffer as _rb  # noqa: E402
 
 
@@ -216,32 +216,47 @@ class DataFlexMixSyncTrainer(PPOTrainerSync):
         if self._df_mixer is None:
             return batch
 
-        # accumulate per-domain mean reward from this batch
+        # accumulate per-domain reward AND mean |advantage| from this batch.
+        # Both are needed: reward feeds reward_gap/tscl(slope), |advantage| feeds
+        # dump_ucb. Fetching only rm_scores (as before) starved dump_ucb/tscl of
+        # their signals and collapsed them to softmax(mean_reward).
         data = tq.kv_batch_get(
             keys=batch.keys, partition_id=batch.partition_id,
-            select_fields=["rm_scores", "response_mask"],
+            select_fields=["rm_scores", "response_mask", "advantages"],
         )
         dp = DataProto(batch=data.to_padded_tensor())
         scores = dp.batch["rm_scores"]
         mask = dp.batch["response_mask"]
         per_seq = (scores * mask.to(scores.dtype)).sum(dim=-1)  # (bs,)
+        denom = mask.sum(dim=-1).clamp_min(1.0)
+        adv = dp.batch.get("advantages", None)
+        per_abs_adv = (
+            (adv.abs() * mask.to(adv.dtype)).sum(dim=-1) / denom  # (bs,) mean |A| over valid tokens
+            if adv is not None else None
+        )
 
         # domain per row from prompt tags
         domains_per_row = []
         for tag in batch.tags:
             domains_per_row.append(str(tag.get("data_source", "default")))
-        for d, r in zip(domains_per_row, per_seq.tolist()):
-            self._df_tracker.update(d, r)
+        for i, (d, r) in enumerate(zip(domains_per_row, per_seq.tolist())):
+            a = float(per_abs_adv[i]) if per_abs_adv is not None else None
+            self._df_tracker.update(d, r, abs_adv=a)
 
-        # after warmup, refresh proportions periodically
+        # after warmup, refresh proportions periodically. Feed each mixer the
+        # statistic it declares (reward level / mean |A| / reward slope) via
+        # mixer_inputs, which errors rather than silently falling back.
         if (
             self.global_steps >= self._df_meta["warmup_step"]
             and self.global_steps % max(1, self._df_meta["update_step"]) == 0
         ):
-            stats = {d: self._df_tracker.mean(d) for d in self._df_domains}
-            props = self._df_mixer.act(stats, dp)
+            mix_stats, mix_kwargs = mixer_inputs(self._df_mixer, self._df_tracker, self._df_domains)
+            props = self._df_mixer.act(mix_stats, dp, **mix_kwargs)
             _rb.set_proportions(self._df_domains, list(props))
-            for d, p in zip(self._df_domains, props):
-                metrics[f"dataflex/prop_{d}"] = float(p)
-                metrics[f"dataflex/reward_{d}"] = float(stats[d])
+            for j, d in enumerate(self._df_domains):
+                metrics[f"dataflex/prop_{d}"] = float(props[j])
+                metrics[f"dataflex/reward_{d}"] = float(self._df_tracker.mean(d))
+                metrics[f"dataflex/absadv_{d}"] = float(self._df_tracker.mean_abs_adv(d))
+                metrics[f"dataflex/slope_{d}"] = float(self._df_tracker.slope(d))
+                metrics[f"dataflex/count_{d}"] = float(self._df_tracker.count(d))
         return batch

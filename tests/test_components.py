@@ -285,3 +285,66 @@ def test_domain_tracker_slope():
     for v in [0.1, 0.2, 0.3, 0.4, 0.5]:   # rising
         t.update("d", v)
     assert t.slope("d") > 0.05
+
+
+# ---------------- P0.1: mixer data-flow fix (dump_ucb/tscl no longer degenerate) ----------------
+
+def test_domain_tracker_absadv_and_count():
+    from dataflex_verl.mixers import DomainStatsTracker
+    t = DomainStatsTracker(window=10)
+    t.update("d", 0.5, abs_adv=0.8)
+    t.update("d", 0.5, abs_adv=0.4)
+    assert abs(t.mean_abs_adv("d") - 0.6) < 1e-9
+    assert t.count("d") == 2
+    # unseen domain: safe defaults
+    assert t.mean_abs_adv("none") == 0.0 and t.count("none") == 0
+
+
+def test_mixer_inputs_feeds_distinct_signals_no_degeneracy():
+    """The bug: trainer fed every mixer {domain->mean reward}, so dump_ucb and
+    tscl both collapsed to softmax(mean_reward). With equal mean reward but
+    different |A| and slope, the repaired data flow must give them DIFFERENT maps."""
+    from dataflex_verl.mixers import DomainStatsTracker, mixer_inputs
+    t = DomainStatsTracker(window=10)
+    for _ in range(3):
+        t.update("a", 0.5, abs_adv=0.9)                  # flat reward, high |A|
+    for r in (0.3, 0.5, 0.7):
+        t.update("b", r, abs_adv=0.1)                    # rising reward, low |A|
+    assert abs(t.mean("a") - t.mean("b")) < 1e-9         # SAME mean reward -> old code = identical maps
+
+    rg = REGISTRY.build("mixer", "reward_gap", runtime={"domains": ["a", "b"]}, cfg={"floor": 0.0})
+    du = REGISTRY.build("mixer", "dump_ucb", runtime={"domains": ["a", "b"]}, cfg={"floor": 0.0, "c": 1.0})
+    ts = REGISTRY.build("mixer", "tscl", runtime={"domains": ["a", "b"]}, cfg={"floor": 0.0})
+
+    # reward_gap consumes reward (equal) -> ~equal proportions, no counts kwarg
+    s, k = mixer_inputs(rg, t, ["a", "b"])
+    assert k == {}
+    assert abs(rg.act(s, None, **k)[0] - rg.act(s, None, **k)[1]) < 1e-6
+
+    # dump_ucb consumes mean |A| (a>b) + counts -> a favored on learnability
+    s, k = mixer_inputs(du, t, ["a", "b"])
+    assert "counts" in k and abs(s["a"] - 0.9) < 1e-9 and abs(s["b"] - 0.1) < 1e-9
+    p_du = du.act(s, None, **k)
+    assert p_du[0] > p_du[1]
+
+    # tscl consumes reward slope (a flat=0, b rising>0) -> b favored
+    s, k = mixer_inputs(ts, t, ["a", "b"])
+    assert k == {} and s["b"] > s["a"] + 0.05
+    p_ts = ts.act(s, None, **k)
+    assert p_ts[1] > p_ts[0]
+
+    # THE fix: despite identical mean reward, dump_ucb and tscl now differ
+    assert not np.allclose(p_du, p_ts)
+
+
+def test_mixer_inputs_static_and_unknown_signal():
+    from dataflex_verl.mixers import DomainStatsTracker, mixer_inputs
+    import pytest
+    t = DomainStatsTracker()
+    st = REGISTRY.build("mixer", "static", runtime={"domains": ["a", "b"]}, cfg={})
+    assert mixer_inputs(st, t, ["a", "b"]) == ({}, {})
+
+    class _NoSignal:
+        signal = None
+    with pytest.raises(ValueError):
+        mixer_inputs(_NoSignal(), t, ["a", "b"])
