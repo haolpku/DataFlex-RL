@@ -348,3 +348,58 @@ def test_mixer_inputs_static_and_unknown_signal():
         signal = None
     with pytest.raises(ValueError):
         mixer_inputs(_NoSignal(), t, ["a", "b"])
+
+
+# ---------------- P1.1: matched-random selection control ----------------
+
+def test_matched_random_matches_group_binary_keep():
+    """difffilter-style target (threshold_band): whole groups kept/dropped.
+    matched_random must keep the SAME NUMBER of whole groups, chosen at random."""
+    sel = REGISTRY.build(
+        "selector", "matched_random", runtime={},
+        cfg={"target": {"name": "threshold_band", "params": {"low": 0.0, "high": 1.0}}, "seed": 0},
+    )
+    # group solve rates: A=0.0 (drop), B=0.5 (keep, in-band), C=1.0 (drop) -> target keeps only B (2 rows)
+    scores = torch.tensor([0.0, 0.0, 0.5, 0.5, 1.0, 1.0])
+    b = _batch_with_uid_len([0, 0, 1, 0, 1, 1], ["A", "A", "B", "B", "C", "C"], [3] * 6)
+    keep = sel.act(scores, b)
+    assert len(keep) == 2                        # same COUNT as target (one whole group)
+    assert set(keep) in ({0, 1}, {2, 3}, {4, 5})  # a whole random group, not a signal-driven pick
+
+
+def test_matched_random_matches_within_group_count():
+    """maxvar-style target (max_variance, keep_fraction=0.5): keeps m of G per group.
+    matched_random must keep the same m per group, at random within that group."""
+    sel = REGISTRY.build(
+        "selector", "matched_random", runtime={},
+        cfg={"target": {"name": "max_variance", "params": {"keep_fraction": 0.5}}, "seed": 0},
+    )
+    scores = torch.tensor([1., 1., 0., 0.])
+    b = _batch_with_uid_len([1, 1, 0, 0], ["g", "g", "g", "g"], [3, 3, 3, 3])
+    keep = sel.act(scores, b)
+    assert len(keep) == 2   # max_variance keeps n=round(0.5*4)=2 -> matched_random keeps 2 too
+
+
+def test_matched_random_ignores_signal_distribution():
+    """Repeated calls with a fixed target-kept-count must vary WHICH indices are kept
+    (random), proving the selection signal itself is discarded, only the count is used."""
+    sel = REGISTRY.build(
+        "selector", "matched_random", runtime={},
+        cfg={"target": {"name": "topk_fraction", "params": {"fraction": 0.5}}},
+    )
+    scores = torch.tensor([0.1, 0.9, 0.3, 0.7, 0.2, 0.8])
+    b = _batch_with_uid_len([0] * 6, ["x"] * 6, [3] * 6)  # single flat group
+    picks = {tuple(sel.act(scores, b)) for _ in range(20)}
+    assert all(len(p) == 3 for p in picks)  # always matches topk's count (3 of 6)
+    assert len(picks) > 1                    # but WHICH 3 varies -> signal is not used
+
+
+# ---------------- P1.2: matched-update-token stopping rule ----------------
+
+def test_round_up_to_boundary():
+    from dataflex_verl.token_budget import round_up_to_boundary
+    assert round_up_to_boundary(247, 100, 2600) == 300
+    assert round_up_to_boundary(300, 100, 2600) == 300
+    assert round_up_to_boundary(301, 100, 2600) == 400
+    assert round_up_to_boundary(2550, 100, 2600) == 2600   # rounds up to boundary
+    assert round_up_to_boundary(2650, 100, 2600) == 2600   # never exceeds the ceiling

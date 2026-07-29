@@ -43,6 +43,7 @@ from verl.workers.utils.padding import response_to_nested  # noqa: E402
 
 from .build import build_from_config  # noqa: E402
 from .mixers import DomainStatsTracker, mixer_inputs  # noqa: E402
+from .token_budget import round_up_to_boundary  # noqa: E402
 from . import replay_buffer as _rb  # noqa: E402
 
 
@@ -57,15 +58,21 @@ class DataFlexSyncTrainer(PPOTrainerSync):
         self._df_scorer = None
         self._df_actuator = None
         self._df_meta = None
+        self._df_cum_nonzero_tokens = 0.0
+        self._df_token_budget = None
+        self._df_budget_stop_set = False
         df_cfg = config.get("dataflex", None)
         if df_cfg is not None and df_cfg.get("mechanism", None) in self._SUPPORTED:
             self._df_scorer, self._df_actuator, self._df_meta = build_from_config(
                 df_cfg, adv_estimator=str(config.algorithm.adv_estimator)
             )
+            tb = df_cfg.get("token_budget", None)
+            self._df_token_budget = float(tb) if tb is not None else None
             logger.info(
                 f"[DataFlex] {self._df_meta['mechanism']} enabled: "
                 f"scorer={type(self._df_scorer).__name__}, "
                 f"actuator={type(self._df_actuator).__name__}, warmup={self._df_meta['warmup_step']}"
+                + (f", token_budget={self._df_token_budget:.0f}" if self._df_token_budget else "")
             )
 
     def _weights_from_actuator(self, scores, dp, n) -> torch.Tensor:
@@ -124,6 +131,33 @@ class DataFlexSyncTrainer(PPOTrainerSync):
                 metrics["dataflex/weight_std"] = float(weights.std())
                 if self._df_meta["mechanism"] == "select":
                     metrics["dataflex/kept_frac"] = float((weights > 0).float().mean())
+                    if self._df_token_budget is not None:
+                        # revision_plan_3 P1.2 matched-update-token control: accumulate
+                        # actual retained (weight>0) response tokens and, once the
+                        # budget is crossed, cap total_training_steps at the next
+                        # save_freq boundary so the run stops there instead of at the
+                        # originally-configured (much shorter) step count.
+                        nz_tokens = float((w_tok > 1e-8).sum())
+                        self._df_cum_nonzero_tokens += nz_tokens
+                        metrics["dataflex/cum_nonzero_tokens"] = self._df_cum_nonzero_tokens
+                        metrics["dataflex/token_budget_frac"] = (
+                            self._df_cum_nonzero_tokens / self._df_token_budget
+                        )
+                        if (
+                            not self._df_budget_stop_set
+                            and self._df_cum_nonzero_tokens >= self._df_token_budget
+                        ):
+                            stop_at = round_up_to_boundary(
+                                self.global_steps, self.config.trainer.save_freq,
+                                self.total_training_steps,
+                            )
+                            self.total_training_steps = stop_at
+                            self._df_budget_stop_set = True
+                            logger.info(
+                                f"[DataFlex] token_budget {self._df_token_budget:.0f} reached at "
+                                f"step {self.global_steps} (cum={self._df_cum_nonzero_tokens:.0f}); "
+                                f"capping total_training_steps to {stop_at}"
+                            )
 
         # persist rollout_is_weights so the actor loss picks it up
         out = {"rollout_is_weights": response_to_nested(w_tok, response_mask)}

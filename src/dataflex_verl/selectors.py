@@ -151,3 +151,49 @@ class MaxVarianceSelector(Selector):
             sel_local = self._best_subset(Rg)
             keep.extend([idx[j] for j in sel_local])
         return sorted(keep)
+
+
+@register_selector("matched_random")
+class MatchedRandomSelector(Selector):
+    """Random-selection control matched to a target selector's per-step retention.
+
+    revision_plan_3 P1.1: does a targeted selector beat retaining the same
+    AMOUNT of data at random, at the same step, at the same sparsity? Calls
+    ``target`` (another selector, built from the same registry, fed the SAME
+    ``scores``) to see what it would keep this step, discards *which* members
+    it picked, and instead keeps a uniformly random subset of the identical
+    size — matched **per uid-group**, not just on the global average keep
+    fraction. This makes the match exact for both:
+      - group-level all-or-nothing selectors (threshold_band/difffilter: every
+        member of a group shares one score, so target_keep is always a whole
+        group or nothing) — matched_random then keeps the same NUMBER of whole
+        groups, chosen at random instead of by solve rate;
+      - within-group selectors (max_variance/maxvar: keeps m of G members per
+        group) — matched_random keeps the same m per group, chosen at random
+        instead of by the max-variance signal.
+    With no uid (flat batches, e.g. topk_fraction), ``_groups`` yields one
+    group spanning the whole batch, so this reduces to a flat random pick of
+    the same total count.
+    """
+
+    def __init__(self, target, seed=None, **kwargs):
+        super().__init__(**kwargs)
+        from .core.registry import REGISTRY  # local import: avoid a hard cycle at module load
+        t_params = dict((target or {}).get("params", {}) or {})
+        self._target = REGISTRY.build("selector", target["name"], runtime={}, cfg=t_params)
+        self._rng = np.random.default_rng(seed)
+
+    def act(self, scores: torch.Tensor, batch, **ctx) -> list[int]:
+        target_keep = set(self._target.act(scores, batch, **ctx))
+        n = scores.numel()
+        keep = []
+        for idx in _groups(batch, n):
+            m = sum(1 for i in idx if i in target_keep)
+            if m <= 0:
+                continue
+            if m >= len(idx):
+                keep.extend(idx)
+                continue
+            chosen = self._rng.choice(np.asarray(idx), size=m, replace=False)
+            keep.extend(chosen.tolist())
+        return sorted(keep)
