@@ -21,9 +21,10 @@
 # start so there's no gap yet; proportions shift once a domain starts solving).
 set -xeuo pipefail
 
-ROOT=/apdcephfs_zwfy14/share_304380933/aldenliang
-MODEL=$ROOT/models/Qwen2.5-0.5B-Instruct
-DATA=$ROOT/data/gsm8k_2domain   # multi-domain parquet (data_source kept, +domain col)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${DATAFLEX_ROOT:-$HERE/../.dataflex_demo}"
+MODEL="${DATAFLEX_MODEL:-$ROOT/models/Qwen2.5-0.5B-Instruct}"
+DATA="${DATAFLEX_MIX_DATA:-$ROOT/data/gsm8k_2domain}"   # multi-domain parquet (data_source kept, +domain col)
 
 export PYTHONUNBUFFERED=1
 export VLLM_USE_V1=1

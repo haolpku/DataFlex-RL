@@ -1,17 +1,51 @@
 # DataFlex-RL
 
-**DataFlex-RL** is a plug-in for [verl](https://github.com/volcengine/verl) that adds data-centric training controls to GRPO. It decomposes every method into two orthogonal choices — **what to score** and **what to do with the score** — and lets you compose them freely without modifying verl's core.
+**Composable data scheduling for RLVR and GRPO.** DataFlex-RL is a zero-fork
+plugin for [verl](https://github.com/volcengine/verl) that lets you decide which
+rollouts to keep, how strongly to weight them, and which domains to sample next.
+It uses signals already produced by the RL loop, so the surrounding rollout,
+verification, and policy-update code stays unchanged.
 
-## Installation
+[Documentation](https://haolpku.github.io/DataFlex-RL-Doc) ·
+[Evaluation companion](https://github.com/haolpku/DataFlex-RL-Paper) ·
+[Design notes](docs/DESIGN.md) ·
+[Quickstart](docs/QUICKSTART.md)
+
+## Why DataFlex-RL?
+
+RL training already exposes useful signals—rewards, advantages, token
+log-probabilities, and prompt groups—but most data-policy ideas are implemented
+as one-off changes to a trainer. DataFlex-RL turns those signals into reusable
+components:
+
+- **Select** rollouts that carry a useful learning signal.
+- **Reweight** samples or tokens without writing a custom policy loss.
+- **Mix** domains with an adaptive curriculum for future batches.
+- Compare alternatives under the same verl training recipe and inspect the
+  resulting per-step metrics.
+
+The code is intentionally small: a scorer produces a signal, and a mechanism
+turns that signal into an action. A new combination is normally a configuration,
+not a fork of verl.
+
+## Install
 
 ```bash
-pip install verl          # verl first
-pip install dataflex-verl # then this package
+pip install verl          # install the host RL framework first
+pip install dataflex_verl # then install the plugin
+```
+
+For development:
+
+```bash
+git clone https://github.com/haolpku/DataFlex-RL.git
+cd DataFlex-RL
+pip install -e ".[dev]"
 ```
 
 ## Quick start
 
-Add two lines to your verl training command:
+Add a small `dataflex` block to a normal `verl` GRPO command:
 
 ```bash
 python -m verl.trainer.main_ppo \
@@ -23,62 +57,103 @@ python -m verl.trainer.main_ppo \
     +dataflex.actuator.params.low=0.2 \
     +dataflex.actuator.params.high=0.8 \
     +dataflex.warmup_step=0 \
-    ... # your normal verl args
+    ... # your usual verl arguments
 ```
 
-That's it. DataFlex-RL hooks into verl's `_compute_advantage` step; no other changes needed.
+DataFlex-RL registers its trainers through verl's plugin entry point and reuses
+verl's existing policy-loss hook. You keep the standard `main_ppo` entry point;
+the plugin only adds the data-policy configuration and its metrics.
 
-## Scorer × Actuator abstraction
+## Three mechanisms
 
-Every method is a combination of:
+| Mechanism | What changes | Where it acts | Typical use |
+|---|---|---|---|
+| `select` | Which rollouts contribute to the update | After advantage computation | Difficulty filtering, top-k, max-variance |
+| `reweight` | How much each sample or token contributes | In the policy loss | Advantage or token-probability weighting |
+| `mix` | Which domain supplies the next batch | Before the next rollout | Reward-gap, DUMP-UCB, or TSCL curricula |
 
-| Layer | What it does | Examples |
-|---|---|---|
-| **Scorer** | Assigns a value to each rollout or group | `group_solve_rate`, `advantage_magnitude`, `reward_difficulty`, `token_prob` |
-| **Actuator** | Decides what to do with the score | `threshold_band` (select), `topk_fraction` (select), `advantage_reweight`, `softmax`, `per_advantage` (replay), `max_variance` (select) |
+### Signal + mechanism
 
-One scorer can feed any actuator, and one actuator can receive any scorer. A new method is a YAML config, not new code.
+The same signal can be paired with different actions. For example, a reward
+signal can filter extreme groups, up-weight a middle difficulty band, or guide a
+domain mixer. The built-in scorers include:
 
-## Mechanisms
+`group_solve_rate` · `reward_difficulty` · `advantage_magnitude` ·
+`token_prob`
 
-| `mechanism` | What changes | Notes |
-|---|---|---|
-| `select` | Which rollouts enter the policy update | Removes low/high-scoring groups before the loss |
-| `reweight` | How much each rollout contributes | Multiplies policy loss by per-token weights |
-| `mix` | Which domain is sampled next step | Dynamic curriculum over training domains |
+The built-in actuators include:
 
-## Built-in methods
+`threshold_band` · `topk_fraction` · `max_variance` · `matched_random` ·
+`softmax` · `per_advantage` · `advantage_reweight` · `reward_gap` ·
+`dump_ucb` · `tscl`
+
+Example configurations:
 
 ```yaml
-# Difficulty filtering (DAPO-style)
+# Select mid-difficulty groups
 mechanism: select
-scorer: group_solve_rate  success_threshold=0.5
-actuator: threshold_band  low=0.2  high=0.8
+scorer: {name: group_solve_rate, params: {success_threshold: 0.5}}
+actuator: {name: threshold_band, params: {low: 0.2, high: 0.8}}
 
-# Top-k selection by advantage magnitude
-mechanism: select
-scorer: advantage_magnitude
-actuator: topk_fraction  fraction=0.5
-
-# Advantage reweighting
+# Reweight by advantage magnitude
 mechanism: reweight
-scorer: token_prob
-actuator: advantage_reweight  alpha=0.5
+scorer: {name: advantage_magnitude, params: {agg: mean}}
+actuator: {name: softmax, params: {temperature: 1.0}}
 
-# Max-variance group selection
-mechanism: select
-scorer: reward_difficulty
-actuator: max_variance  keep_fraction=0.5
-
-# Domain curriculum (DUMP UCB)
+# Adapt the domain mixture from learning progress
 mechanism: mix
-scorer: reward_difficulty
-actuator: dump_ucb  c=1.0  window=50
+scorer: {name: reward_difficulty}
+actuator: {name: reward_gap, params: {temperature: 1.0, floor: 0.05}}
 ```
 
-## Adding a new method
+## Run the included demos
 
-Subclass `Scorer` or `Selector`/`Reweighter`/`Mixer`, register with `@register_scorer` / `@register_selector` etc., and use it by name in the config. See `src/dataflex_verl/scorers.py` for examples.
+The examples are short GRPO smoke tests on Qwen2.5-0.5B and GSM8K. They are
+intended to verify the integration and expose the DataFlex metrics, not to replace
+a full training campaign.
+
+```bash
+# Set these for your machine; the scripts also accept DATAFLEX_MODEL and DATAFLEX_DATA.
+export DATAFLEX_ROOT=/path/to/dataflex-demo
+export DATAFLEX_MODEL=$DATAFLEX_ROOT/models/Qwen2.5-0.5B-Instruct
+export DATAFLEX_DATA=$DATAFLEX_ROOT/data/gsm8k
+
+bash examples/run_demo.sh reweight
+bash examples/run_demo.sh select
+
+# Mix requires a parquet with a separate `domain` column.
+python examples/build_2domain_gsm8k.py \
+    --src "$DATAFLEX_DATA" --dst "$DATAFLEX_ROOT/data/gsm8k_2domain"
+bash examples/run_demo.sh mix
+```
+
+The scripts print metrics such as `dataflex/weight_mean`,
+`dataflex/kept_frac`, and `dataflex/prop_<domain>`. See the
+[full quickstart](docs/QUICKSTART.md) for data preparation, scaling notes, and
+troubleshooting.
+
+## What is included
+
+- A framework-agnostic scorer/actuator core and verl v1 trainers.
+- Select, reweight, and mix implementations with registry-based configuration.
+- Matched-random and matched-update-token helpers for controlled diagnostics.
+- End-to-end examples and CPU-only unit tests.
+- Bilingual [documentation](https://haolpku.github.io/DataFlex-RL-Doc) and a
+  separate [evaluation companion](https://github.com/haolpku/DataFlex-RL-Paper)
+  for the controlled RLVR study.
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest   # no GPU needed for the unit tests
+```
+
+## Add a new component
+
+Subclass the relevant scorer or actuator, register it, and refer to it by name in
+the config. See `src/dataflex_verl/scorers.py` and the
+[developer guide](https://haolpku.github.io/DataFlex-RL-Doc/en/guide/basicinfo/algorithms/).
 
 ```python
 from dataflex_verl.core.registry import register_scorer
@@ -91,17 +166,17 @@ class MyScorer(Scorer):
     granularity = "prompt"
 
     def score(self, batch, step_id, **ctx):
-        # return a (batch_size,) tensor
+        # Return one score per prompt.
         ...
 ```
 
-## Tests
+## Compatibility
 
-```bash
-pip install -e ".[dev]"
-pytest   # no GPU needed for unit tests
-```
+DataFlex-RL targets verl's v1 trainer and standard GRPO-style data flow. Install a
+verl version compatible with your environment, then run the sanity check in
+`docs/QUICKSTART.md` before launching a multi-GPU job. The plugin does not install
+verl automatically because the host framework and CUDA stack are deployment-specific.
 
-## Design
+## License
 
-The scorer/actuator split and verl integration are described in `docs/DESIGN.md`. The key invariant: DataFlex-RL only writes `rollout_is_weights` into the TransferQueue; verl's policy loss picks it up automatically.
+Apache-2.0. See `pyproject.toml` for package metadata.

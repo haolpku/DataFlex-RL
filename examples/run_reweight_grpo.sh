@@ -11,9 +11,10 @@
 # Verified: Qwen2.5-0.5B / GSM8K / 8x H20, 2 steps, dataflex/weight_mean≈1.0.
 set -xeuo pipefail
 
-ROOT=/apdcephfs_zwfy14/share_304380933/aldenliang
-MODEL=$ROOT/models/Qwen2.5-0.5B-Instruct
-DATA=$ROOT/data/gsm8k
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${DATAFLEX_ROOT:-$HERE/../.dataflex_demo}"
+MODEL="${DATAFLEX_MODEL:-$ROOT/models/Qwen2.5-0.5B-Instruct}"
+DATA="${DATAFLEX_DATA:-$ROOT/data/gsm8k}"
 
 export PYTHONUNBUFFERED=1
 export VLLM_USE_V1=1

@@ -45,16 +45,17 @@ verl's Ray workers.
 
 ## 3. Point the demos at your model & data
 
-The `examples/*.sh` scripts default to:
+The example scripts use a portable local default and accept environment overrides:
 
-```
-ROOT=/apdcephfs_zwfy14/share_304380933/aldenliang
-MODEL=$ROOT/models/Qwen2.5-0.5B-Instruct
-DATA=$ROOT/data/gsm8k
+```bash
+export DATAFLEX_ROOT=/path/to/dataflex-demo
+export DATAFLEX_MODEL=$DATAFLEX_ROOT/models/Qwen2.5-0.5B-Instruct
+export DATAFLEX_DATA=$DATAFLEX_ROOT/data/gsm8k
 ```
 
-Edit `ROOT`/`MODEL`/`DATA` at the top of each script for your environment. Any
-GRPO-ready GSM8K parquet (verl's standard format) works.
+Any GRPO-ready GSM8K parquet (verl's standard format) works. For the mix demo,
+set `DATAFLEX_MIX_DATA` to the generated two-domain directory, or keep the default
+`$DATAFLEX_ROOT/data/gsm8k_2domain`.
 
 ## 4. Run a mechanism
 
