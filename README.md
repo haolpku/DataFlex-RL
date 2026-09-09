@@ -11,6 +11,11 @@ verification, and policy-update code stays unchanged.
 [Design notes](docs/DESIGN.md) ·
 [Quickstart](docs/QUICKSTART.md)
 
+![DataFlex-RL architecture](assets/dataflex_rl_overview.png)
+
+*DataFlex-RL inserts configurable selection, reweighting, and mixture controls into
+the shared verl/GRPO workflow.*
+
 ## Why DataFlex-RL?
 
 RL training already exposes useful signals—rewards, advantages, token
